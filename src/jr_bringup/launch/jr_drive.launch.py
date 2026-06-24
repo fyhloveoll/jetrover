@@ -23,8 +23,8 @@ def generate_launch_description():
         output='screen',
     )
     return LaunchDescription([
-        DeclareLaunchArgument('max_linear', default_value='0.25'),
-        DeclareLaunchArgument('max_angular', default_value='0.6'),
+        DeclareLaunchArgument('max_linear', default_value='0.15'),
+        DeclareLaunchArgument('max_angular', default_value='0.45'),
         bringup,
         joy,
     ])
