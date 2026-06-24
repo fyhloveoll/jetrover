@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>jr_bringup</name>
+  <version>0.0.1</version>
+  <description>Clean JetRover bringup: composes vendor hardware drivers (chassis/lidar/camera) without modifying vendor code. No demo apps.</description>
+  <maintainer email="fanyuheng14@gmail.com">fyh</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- runtime: we call these vendor packages' launch files -->
+  <exec_depend>controller</exec_depend>
+  <exec_depend>peripherals</exec_depend>
+  <exec_depend>ros_robot_controller</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
