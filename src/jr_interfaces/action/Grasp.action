@@ -1,14 +1,17 @@
 # jr_interfaces/action/Grasp.action
 # Pick (and optionally place) one detected object with the eye-in-hand arm.
 
-# --- Goal ---
-string target_class       # "" = use the node's configured target classes
+# --- Goal ---   (selection: object_id wins; else auto-pick via the class/color filters)
+int32  object_id          # >=0: grasp this scene object (id from /jr/scene/objects); -1: auto-pick
+string target_class       # optional YOLO semantic filter ("" = any)
+string target_color       # optional color-segmentation filter ("" = any)
 bool   do_place           # true: place at place_pose after grasping; false: hold + return to observe
 ---
 # --- Result ---
 bool                success
 string              failure_mode   # "" on success; else no_target/out_of_reach/grasp_empty/slip/board_hang/timeout
-string              object_class
+int32               object_id      # which scene object was grasped (-1 if N/A)
+string              object_label   # class or color name
 geometry_msgs/Point grasp_pose     # arm-base frame
 int32               attempts
 ---

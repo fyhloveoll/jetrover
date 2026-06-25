@@ -17,6 +17,23 @@
 
 **三个关键决策**:① 分割靠**深度去平面**(不靠模型);② 看图靠**压缩流 + 自写点击小窗**(低带宽、直观);③ 点击像素**映射到团块**再走老管线。
 
+## 1.5 控制方式解耦:物体编号(ID)是统一接口 ★
+
+**核心架构(用户 2026-06-25 指出,正确的抽象):鼠标点击只是一种"前端",不能让机器人依赖人点鼠标(工业/自主场景)。真正的统一接口 = 给每个团块分配稳定编号(ID),"按 ID 抓取"是核心原语,所有选择方式都解析成一个 ID。**
+
+```
+                          ┌──────────────────────────────┐
+  鼠标点击(像素→命中团块) ─┐                              │
+  命令 "抓 2 号"(直接给ID) ─┼─► 选出 object_id ──► grasp(object_id) ──► M5 抓取管线
+  自主规则(最近/最大/某类) ─┤                              │
+  LLM(M9:"抓那个瓶子"→ID) ─┘   ◄── /jr/scene/objects [{id,u,v,bbox,class?,color?,reachable,dist}]
+```
+
+- segmenter 维护**物体注册表** `/jr/scene/objects`:每个团块带 `id`,标注画面上**画出编号**。
+- 核心抓取接口 = **`grasp(object_id)`**(Action/服务),与"怎么选出来的"无关。
+- 各前端只负责**产出一个 id**:点击→像素命中团块取其 id;命令行直接传 id;LLM 把语言映射到 id。
+- **稳定 ID**:静态场景(机器人停下抓、物体不动)每帧分配 ID 即可,选中瞬间冻结那一帧的注册表;物体会动则需轻量跟踪(质心匹配)给持久 ID —— 列为细化项。
+
 ## 2. 类无关分割:深度去地板平面(本方案的核心)
 
 **思路**:eye-in-hand 在观察位俯视,**地板是一个占主导的 3D 平面**;放在地板上的物体会**凸出于该平面**。
@@ -45,21 +62,29 @@
 - 放进 `scripts/`,一条命令起(像 view.sh)。
 **备选**:RViz 的 PublishPoint 工具点点云→`/clicked_point`(3D),机器人找最近团块。直观性差些、点云过网带宽大,不首选。
 
-## 5. 点击 → 物体 → 抓
+## 5. 选择 → object_id → 抓(核心原语)
 
-- 机器人侧 grasp/segmenter 订阅 `/jr/click` (u,v):
-  - 找**掩膜包含 (u,v)** 的团块(或质心最近的团块)。
-  - 命中 → 取该团块**质心 (u,v) + 中值深度** → 走 M5 管线(深度→相机系→hand-eye→臂基座→IK→抓取序列 + 验证/重试)。
-  - 没命中物体(点到地板/空白)→ 状态反馈 "no object at click"。
-  - 团块不可达 → 反馈 "out of reach"(M6 钩子:底盘靠近)。
+**核心 = `grasp(object_id)`**:从最新 `/jr/scene/objects` 注册表取该 id 的团块 → 质心 (u,v) + 中值深度 → 走 M5 管线(深度→相机系→hand-eye→臂基座→IK→抓取序列 + 验证/重试)。
+- id 不存在 → "no such object"。团块不可达 → "out of reach"(M6 钩子:底盘靠近)。
+
+**各前端 = 产出一个 id**:
+- **点击**:机器人订 `/jr/click`(u,v)→ 找**掩膜包含该像素**(或质心最近)的团块 → 得 id → 调 grasp(id);点到地板/空白 → "no object at click"。
+- **命令行**:`ros2 ...` 直接传 id("抓 2 号")。
+- **类别/颜色**:yolo/color 后端给团块打 class/color 标签,按"抓 bottle / 抓 red"筛出 id。
+- **LLM(M9)**:语言 → 注册表里挑 id。
 
 ## 6. 接口
 
-- `/jr/scene/annotated` (+`/compressed`):标注画面。
-- `/jr/scene/objects`(自定义 msg 或 String/JSON):团块列表。
-- `/jr/click`(PointStamped,像素):笔记本点击。
-- 抓取触发:点击直接触发,或点击→选中→再调 M5 的 `/jr/grasp` Action(target 用"选中团块的像素/id")。建议**点击=选中并触发**,简单直接。
-- 参数:平面距离阈值、最小团块面积/高度、可达性范围、降采样步长。
+**核心**:抓取 Action/服务 **`/jr/grasp`**,Goal 以 `object_id` 为主(见 `jr_interfaces/action/Grasp.action`,已加 `object_id` 字段):
+- `object_id>=0`:抓注册表里这个;`-1`:用 class/color 过滤自动挑。
+- 各前端都调它,只是先算出 id。
+
+**话题**:
+- `/jr/scene/annotated` (+`/compressed`):标注画面(**画出每个团块的编号**)。
+- `/jr/scene/objects`:团块注册表 `[{id,u,v,bbox,class?,color?,reachable,dist}]`(自定义 msg 或 String/JSON)。
+- `/jr/click`(PointStamped,像素):点击前端 → 命中→解析 id→调 grasp。
+
+**参数**:平面距离阈值、最小团块面积/高度、可达性范围、降采样步长、ID 跟踪开关。
 
 ## 7. 与多后端检测的关系
 
