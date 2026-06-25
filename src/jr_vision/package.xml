@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>jr_vision</name>
+  <version>0.0.1</version>
+  <description>Own vision for JetRover: YOLO detection + depth -> 3D grasp target in base frame (eye-in-hand). Publishes an annotated (raw+compressed) stream for remote viewing.</description>
+  <maintainer email="fanyuheng14@gmail.com">fyh</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
+  <!-- ultralytics (YOLO) is a pip package on the robot, not a rosdep key -->
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
