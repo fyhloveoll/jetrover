@@ -1,0 +1,17 @@
+# jr_interfaces/action/Grasp.action
+# Pick (and optionally place) one detected object with the eye-in-hand arm.
+
+# --- Goal ---
+string target_class       # "" = use the node's configured target classes
+bool   do_place           # true: place at place_pose after grasping; false: hold + return to observe
+---
+# --- Result ---
+bool                success
+string              failure_mode   # "" on success; else no_target/out_of_reach/grasp_empty/slip/board_hang/timeout
+string              object_class
+geometry_msgs/Point grasp_pose     # arm-base frame
+int32               attempts
+---
+# --- Feedback ---
+string state              # current state name (DETECT/PLAN/APPROACH/GRASP/VERIFY/LIFT/PLACE/HOME/...)
+int32  attempt            # attempt index (1-based)

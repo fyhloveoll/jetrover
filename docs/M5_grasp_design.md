@@ -89,22 +89,39 @@
 - **pitch**:`80°(z<0.2 低物体,近俯冲)` / `30°(较高)`,沿用 vendor。
 - **下探深度补偿**:`dist += 0.03`(半径+误差,沿视线射线,vendor 约定,已在 grasp.py)。
 
-## 6. 放置(M5 简版)
+## 6. 放置(PLACE,M5 做)
 
-- 抓起后移到**固定投放位姿**(预设关节角,如车体一侧),张爪放下,确认(开度回到空值)。
-- 参考 vendor `track_and_grab` 的固定 place 位姿。
-- M6 再做"导航到投放区"的动态放置。
+- 抓起 + 验证 + 抬升后,移到**固定投放位姿** `place_pose`(预设 5 关节脉冲,参数化,如车体一侧 / 一个小筐上方),张爪放下,**确认放下**(夹爪开度回到"空"值)。
+- `place_pose` 在真机录一个安全位姿(参考 vendor `track_and_grab` 的固定 place 位姿)。
+- `do_place=false` 时跳过放置,抓住回观察位(纯 pick)。
+- M6 再升级成"导航到投放区"的动态放置(M5 的 PLACE 接口/状态原样复用,只是位姿来源从固定改为导航目标)。
 
-## 7. 接口设计
+## 7. 接口设计 — Action 主接口(M5 做)
 
-**优先用 Action(长任务 + 反馈 + 可取消):** `/jr/grasp`(自定义或 nav2-style)
-- Goal:`target_class`(可选,默认任意目标类)、`do_place`(bool)
-- Feedback:`state`(当前状态名)、`attempt`(第几次)
-- Result:`success`、`failure_mode`、`object_class`、`grasp_pose`(臂基座系)
+**主接口 = Action `/jr/grasp`**(长任务 + 实时反馈 + 可取消,适合多秒、带重试的抓取)。
+需要一个小接口包 **`jr_interfaces`**(ament_cmake + rosidl)定义 `action/Grasp.action`:
 
-**简版 fallback(已有)**:服务 `/jr/grasp/trigger`(std_srvs/Trigger)+ 状态话题 `/jr/grasp/status`(String)。M5 先把状态机塞进当前 `grasp_once`,接口暂留 Trigger;Action 作为 M5.x 升级。
+```
+# Goal
+string target_class       # "" = 用节点配置的默认目标类
+bool   do_place           # true: 抓后放到 place_pose;false: 抓住回观察位
+---
+# Result
+bool                 success
+string               failure_mode   # 成功为"";否则 no_target/out_of_reach/grasp_empty/slip/board_hang/timeout
+string               object_class
+geometry_msgs/Point  grasp_pose     # 臂基座系抓取点
+int32                attempts
+---
+# Feedback
+string state              # 当前状态名(DETECT/PLAN/APPROACH/...)
+int32  attempt            # 第几次尝试
+```
 
-**参数**:`target_classes`、`max_retries`、`hover_height`、`close_pulse`、`grasp_detect_margin`(开度阈值)、`place_pose`、各状态超时、`servo_min_interval`、`imu_timeout`。
+- **ActionServer** 用 `rclpy.action.ActionServer`,跑在 grasp 节点的 MultiThreadedExecutor 上;`execute_callback` 里跑状态机,逐状态 `goal_handle.publish_feedback(...)`;支持 `goal_handle.is_cancel_requested` 中途取消。
+- **保留** `/jr/grasp/trigger`(std_srvs/Trigger)作便捷封装(内部调一次抓取,默认参数),命令行/调试用;`/jr/grasp/status`(String)继续发状态。
+
+**参数**:`target_classes`、`max_retries`、`hover_height`、`close_pulse`、`grasp_detect_margin`(开度阈值)、`place_pose`、各状态超时、`servo_min_interval`、`imu_timeout`、`dry_run`。
 
 ## 8. 量化(为 M7 铺路)
 
@@ -120,13 +137,14 @@ M5 就开始记:每次抓取的 `(object_class, attempts, success, failure_mode,
 
 ## 10. 增量实施计划(每步可单测)
 
-1. **VERIFY 先行**:写"读 servo_states→判夹爪开度"的小工具,标定空/满阈值(不动整条流程)。← 解锁核心难点
+0. **`jr_interfaces` 接口包**(ament_cmake + rosidl,定义 `Grasp.action`)→ colcon build 通过。**离线可先建好骨架**,机器人回来只需 build。
+1. **VERIFY 先行**:写"读 `/controller_manager/servo_states`→判夹爪开度"的小工具,标定空/满阈值(不动整条流程)。← 解锁核心难点
 2. 把当前 `grasp_once` 线性流程**重构成显式状态机**(enum + 转移函数),happy-path 不变。
 3. 加 **APPROACH 悬停-下探**(两段 IK)。
 4. 接 **VERIFY + RETRY**(开度主判 + 重试 N 次)。
 5. 加 **LIFT 后视觉复检**(回观察位重检测)。
-6. 加 **PLACE**(固定投放位姿)。
-7. 加**量化记录**(CSV)+ 跑 20–30 次出成功率。
-8. (M5.x)Trigger → Action 升级,带 feedback。
+6. 加 **PLACE**(固定 `place_pose`,`do_place` 控制)。
+7. **Action 接口**:`jr_vision` 依赖 `jr_interfaces`,把状态机包进 `ActionServer /jr/grasp`(逐状态 publish_feedback、支持 cancel);Trigger 留作便捷封装。
+8. 加**量化记录**(CSV:object/attempts/success/failure_mode/pose/duration)+ 跑 20–30 次出成功率。
 
 > 实现时继续遵守:不改 vendor;只 SIGTERM 不 kill -9;舵机指令限流;每状态 `board_alive()` 守卫。
