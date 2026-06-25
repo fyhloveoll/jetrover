@@ -15,7 +15,10 @@
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
   <!-- ultralytics (YOLO) is a pip package on the robot, not a rosdep key -->
+  <!-- kinematics_msgs + servo_controller_msgs are vendor pkgs (sourced from ~/ros2_ws) -->
 
   <export>
     <build_type>ament_python</build_type>
