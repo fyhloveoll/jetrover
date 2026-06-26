@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'detector = jr_vision.detector:main',
             'grasp = jr_vision.grasp:main',
+            'scene = jr_vision.scene:main',
         ],
     },
 )

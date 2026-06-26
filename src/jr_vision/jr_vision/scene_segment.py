@@ -81,7 +81,7 @@ def segment(depth, K, step=2, floor_thresh=0.012, above=0.015,
             continue                                    # too small / too big = noise or background
         if bw > max_width_frac * w or y <= top_margin:  # spans width / touches top = far bg/furniture
             continue
-        bbox = (x, y, x + bw, y + bh)
+        bbox = (int(x), int(y), int(x + bw), int(y + bh))   # plain ints (JSON-serializable)
         dist = _bbox_depth_m(depth, bbox)
         if dist <= 0 or dist > max_dist:                # far furniture/background -> drop
             continue
