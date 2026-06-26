@@ -66,6 +66,7 @@ class GraspNode(Node):
         self.declare_parameter('dry_run', True)
         self.declare_parameter('auto_grab', False)
         self.declare_parameter('servo_min_interval', 0.4)   # min gap between bus-servo cmds (s)
+        self.declare_parameter('dur_scale', 2.0)            # motion-duration scale; >1 = slower (testing)
         self.declare_parameter('imu_timeout', 1.5)          # /imu older than this => board hung
         self.declare_parameter('depth_compensation', 0.03)  # radius + error push along view ray (m)
         g = self.get_parameter
@@ -73,6 +74,7 @@ class GraspNode(Node):
         self.conf = float(g('conf').value)
         self.dry_run = bool(g('dry_run').value)
         self.servo_gap = float(g('servo_min_interval').value)
+        self.dur_scale = float(g('dur_scale').value)
         self.imu_timeout = float(g('imu_timeout').value)
         self.depth_comp = float(g('depth_compensation').value)
 
@@ -251,29 +253,28 @@ class GraspNode(Node):
         finally:
             self._lock.release()
 
+    def _move(self, dur, positions):
+        # scaled, settle-coupled motion (slow for testing via dur_scale)
+        self.servos(dur * self.dur_scale, positions)
+        time.sleep(dur * self.dur_scale + 0.2)
+
     def _execute(self, pos, pitch, pulse):
-        self.servos(0.5, ((10, GRIPPER_OPEN),))                    # ensure gripper open first
-        time.sleep(0.6)
-        self.servos(1.0, ((1, int(pulse[0])),))                    # base yaw first
-        time.sleep(1.0)
+        self._move(0.5, ((10, GRIPPER_OPEN),))                     # ensure gripper open first
+        self._move(1.0, ((1, int(pulse[0])),))                     # base yaw first
         if not self.board_alive():                                 # don't close on a dead board
             return self._home(), 'aborted before grasp (board hung)'
-        self.servos(1.5, arm_servos(pulse))                        # full approach
-        time.sleep(1.6)
-        self.servos(0.6, ((10, GRIPPER_CLOSE),))                   # close gripper
-        time.sleep(1.0)
+        self._move(1.5, arm_servos(pulse))                         # full approach
+        self._move(0.8, ((10, GRIPPER_CLOSE),))                    # close gripper
         r2 = self.solve_ik([pos[0], pos[1], pos[2] + 0.05], pitch)
         if r2 is not None:
-            self.servos(1.0, arm_servos(r2.pulse))                 # lift 5cm
-            time.sleep(1.2)
+            self._move(1.2, arm_servos(r2.pulse))                  # lift 5cm
         ok = self._home(close=True)                                # always try to re-home
         return ok, ('grasped + returned' if ok else 'grasped but board hung before re-home')
 
     def _home(self, close=False):
         # always *attempt* the return; harmless if the board is dead, recovers if alive
         grip = GRIPPER_CLOSE if close else GRIPPER_OPEN
-        self.servos(1.5, OBSERVE + ((10, grip),))
-        time.sleep(1.6)
+        self._move(1.5, OBSERVE + ((10, grip),))
         return self.board_alive()
 
     def _on_trigger(self, request, response):

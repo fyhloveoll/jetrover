@@ -21,6 +21,7 @@ from servo_controller_msgs.msg import ServosPosition, ServoPosition
 import os
 MODEL = '/home/ubuntu/third_party/yolo/yolov11/yolo11n.pt'
 TARGETS = set(os.environ.get('JR_TARGETS', 'bottle,cup,wine glass').split(','))
+DUR = float(os.environ.get('JR_DUR', '2.0'))  # motion-duration scale; >1 = slower (testing)
 # eye-in-hand calibration: camera-optical -> gripper/end-effector (vendor track_and_grab)
 HAND2CAM = np.array([[0.0, 0.0, 1.0, -0.101],
                      [-1.0, 0.0, 0.0, 0.011],
@@ -158,6 +159,11 @@ class Grasp(Node):
         req.resolution = 1.0
         return self._call(self.ik, req)
 
+    def move(self, dur, positions):
+        # scaled, settle-coupled motion (slow for testing via JR_DUR)
+        self.servos(dur * DUR, positions)
+        time.sleep(dur * DUR + 0.2)
+
     def pick(self, pos):
         if self.wait_bridge() < 1:
             self.get_logger().warn('servo bridge not connected; commands would be lost; abort')
@@ -168,23 +174,18 @@ class Grasp(Node):
             self.get_logger().warn('no IK solution for approach; abort')
             return False
         p = r.pulse
-        self.get_logger().info('approach pulses %s' % list(p))
-        self.servos(1.0, ((1, p[0]),))                 # base yaw first
-        time.sleep(1.0)
-        self.servos(1.5, ((1, p[0]), (2, p[1]), (3, p[2]), (4, p[3]), (5, p[4])))
-        time.sleep(1.6)
-        self.servos(0.6, ((10, GRIPPER_CLOSE),))       # close gripper
-        time.sleep(1.0)
-        lift = [pos[0], pos[1], pos[2] + 0.05]          # lift 5cm
+        self.get_logger().info('approach pulses %s (DUR=%.1fx)' % (list(p), DUR))
+        self.move(1.0, ((1, p[0]),))                                          # base yaw first
+        self.move(1.5, ((1, p[0]), (2, p[1]), (3, p[2]), (4, p[3]), (5, p[4])))
+        self.move(0.8, ((10, GRIPPER_CLOSE),))                               # close gripper
+        lift = [pos[0], pos[1], pos[2] + 0.05]                                # lift 5cm
         r2 = self.solve_ik(lift, pitch)
         if r2 and r2.pulse:
             q = r2.pulse
-            self.servos(1.0, ((1, q[0]), (2, q[1]), (3, q[2]), (4, q[3]), (5, q[4])))
-            time.sleep(1.2)
-        self.get_logger().info('lifted; holding 2s then returning to observe (still gripping)')
+            self.move(1.2, ((1, q[0]), (2, q[1]), (3, q[2]), (4, q[3]), (5, q[4])))
+        self.get_logger().info('lifted; holding then returning to observe (still gripping)')
         time.sleep(2.0)
-        self.servos(1.5, OBSERVE[:5] + ((10, GRIPPER_CLOSE),))
-        time.sleep(1.6)
+        self.move(1.5, OBSERVE[:5] + ((10, GRIPPER_CLOSE),))
         return True
 
 
