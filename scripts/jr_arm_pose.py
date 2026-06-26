@@ -11,7 +11,10 @@ from servo_controller_msgs.msg import ServosPosition, ServoPosition
 
 # id -> pulse (0..1000 = 0..240deg). ids 1-5 = arm joints, 10 = gripper (200 open, 540 closed)
 POSES = {
-    'observe': [(1, 500), (2, 700), (3, 15), (4, 175), (5, 500), (10, 200)],
+    # safe observe (track_and_grab values; joint3=100/joint4=120 are moderate,
+    # NOT the extreme joint3=15 of automatic_pick that can stall from a curled start)
+    'observe': [(1, 500), (2, 720), (3, 100), (4, 120), (5, 500), (10, 200)],
+    'safe': [(1, 500), (2, 500), (3, 500), (4, 500), (5, 500), (10, 200)],
 }
 
 
