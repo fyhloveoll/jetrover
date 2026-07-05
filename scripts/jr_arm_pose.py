@@ -13,15 +13,25 @@ from servo_controller_msgs.msg import ServosPosition, ServoPosition
 POSES = {
     # safe observe (track_and_grab values; joint3=100/joint4=120 are moderate,
     # NOT the extreme joint3=15 of automatic_pick that can stall from a curled start)
-    'observe': [(1, 500), (2, 720), (3, 100), (4, 120), (5, 500), (10, 200)],
-    'safe': [(1, 500), (2, 500), (3, 500), (4, 500), (5, 500), (10, 200)],
+    'observe': [(1, 500), (2, 720), (3, 100), (4, 120), (5, 500)],
+    'safe': [(1, 500), (2, 500), (3, 500), (4, 500), (5, 500)],
+    # automatic_pick observe: forearm extended (joint3=15) -> camera looks at the
+    # FLOOR ahead (good for grasp detection). Reach via 'observe' first, NOT from curled.
+    'floor': [(1, 500), (2, 700), (3, 15), (4, 175), (5, 500)],
 }
 
 
 def main():
     name = sys.argv[1] if len(sys.argv) > 1 else 'observe'
     duration = float(sys.argv[2]) if len(sys.argv) > 2 else 2.5
-    pose = POSES[name]
+    pose = list(POSES[name])
+    # gripper (servo 10) is DECOUPLED: only commanded if explicitly given as a 3rd
+    # arg (open|close|<pulse>), else left untouched so moving while holding an object
+    # does NOT drop it.
+    if len(sys.argv) > 3:
+        g = sys.argv[3]
+        gv = {'open': 200, 'close': 600}.get(g)
+        pose = pose + [(10, gv if gv is not None else int(float(g)))]
 
     rclpy.init()
     node = Node('jr_arm_pose')
