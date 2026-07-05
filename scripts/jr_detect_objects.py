@@ -42,6 +42,16 @@ def _yolo():
                 break
         if _YOLO is None:
             raise FileNotFoundError('no YOLO model found (set JR_YOLO_MODEL)')
+        # open-vocabulary (YOLO-World/YOLOE): the class MENU comes from a runtime
+        # string, not training -- "pen, usb flash drive, cube" just works. This is
+        # the M9/LLM hook: whatever the language layer asks for becomes a class.
+        cls = [c.strip() for c in _os.environ.get('JR_YOLO_CLASSES', '').split(',') if c.strip()]
+        if cls:
+            if hasattr(_YOLO, 'set_classes'):
+                _YOLO.set_classes(cls)
+                print('[YOLO] open-vocab classes: %s' % cls)
+            else:
+                print('[YOLO] model has no set_classes (not open-vocab); ignoring JR_YOLO_CLASSES')
     return _YOLO
 
 
