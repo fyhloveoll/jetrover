@@ -17,6 +17,56 @@ DEPTH = sys.argv[2] if len(sys.argv) > 2 else 'scene_for_ids_depth.npy'
 KF = sys.argv[3] if len(sys.argv) > 3 else 'scene_for_ids_K.npy'
 ABOVE = 0.012          # metres above the floor plane to count as an object
 MIN_AREA = 250.0       # min blob area (px) to be an instance
+
+# ---- optional YOLO semantic labels (fusion) ----
+# Depth segmentation OWNS the geometry (footprint/height/width/angle); YOLO only NAMES
+# the instances it overlaps (banana1, bottle1...). Unnamed ones keep their color label,
+# so grasping still works on anything -- YOLO adds semantics, never gates detection.
+import os as _os
+YOLO_ON = _os.environ.get('JR_YOLO', '0') == '1'
+YOLO_CONF = float(_os.environ.get('JR_YOLO_CONF', '0.35'))
+_YOLO = None
+
+
+def _yolo():
+    global _YOLO
+    if _YOLO is None:
+        from ultralytics import YOLO as _Y
+        for p in (_os.environ.get('JR_YOLO_MODEL', ''),
+                  _os.path.expanduser('~/jetrover_ws/yolo11m.pt'),
+                  _os.path.expanduser('~/yolo11m.pt'),
+                  '/home/ubuntu/third_party/yolo/yolov11/yolo11n.pt'):
+            if p and _os.path.exists(p):
+                _YOLO = _Y(p)
+                print('[YOLO] loaded %s' % p)
+                break
+        if _YOLO is None:
+            raise FileNotFoundError('no YOLO model found (set JR_YOLO_MODEL)')
+    return _YOLO
+
+
+def yolo_label(rgb, insts):
+    # attach class names to depth-seg instances whose center falls in a YOLO box;
+    # tightest (smallest) containing box wins -- big boxes don't steal small objects
+    try:
+        res = _yolo()(rgb, conf=YOLO_CONF, verbose=False)[0]
+    except Exception as e:
+        print('[YOLO] disabled: %s' % e)
+        return
+    boxes = []
+    for b in res.boxes:
+        x1, y1, x2, y2 = [float(v) for v in b.xyxy[0]]
+        boxes.append((res.names[int(b.cls)], float(b.conf), x1, y1, x2, y2,
+                      (x2 - x1) * (y2 - y1)))
+    for d in insts:
+        best = None
+        for name, conf, x1, y1, x2, y2, area in boxes:
+            if x1 - 4 <= d['u'] <= x2 + 4 and y1 - 4 <= d['v'] <= y2 + 4:
+                if best is None or area < best[2]:
+                    best = (name, conf, area)
+        if best is not None:
+            d['label'] = best[0].replace(' ', '_')
+            d['cls_conf'] = best[1]
 # hue(0-180) -> name, only to LABEL a detected object (never gates detection)
 HUE_NAMES = [(10, 'red'), (22, 'orange'), (33, 'yellow'), (88, 'green'),
              (135, 'blue'), (160, 'purple'), (180, 'red')]
@@ -121,6 +171,8 @@ def detect(rgb, depth, K):
                       'box': (x, y, x + bw, y + bh), 'area': float(area),
                       'angle': float(ang), 'rect': rect, 'depth': dep, 'width_m': width_m,
                       'cnt': (cnts[0] if cnts else None)})
+    if YOLO_ON and insts:
+        yolo_label(rgb, insts)   # semantic names from YOLO; geometry stays depth-seg's
     # IDs per label, nearest first
     out = []
     for lab_name in sorted(set(d['label'] for d in insts)):

@@ -660,8 +660,11 @@ def main():
         if pc_live is not None:
             node.pc_floor = pc_live    # live-first (tracks a nudged paper), cache as fallback
         pc = pc_live if pc_live is not None else node.pc_floor
+        targets = [t.strip() for t in os.environ.get('JR_TARGET', '').split(',') if t.strip()]
         out = []
         for d in node.detect():
+            if targets and d['label'] not in targets:
+                continue                                   # semantic filter (e.g. JR_TARGET=banana)
             if d['box'][3] >= node.rgb.shape[0] - 3:
                 # too close (cut off at the bottom edge): count it EVEN IF blacklisted --
                 # these are invisible to path_clear and MUST be resolved by reversing
