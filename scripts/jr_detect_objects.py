@@ -59,11 +59,20 @@ def yolo_label(rgb, insts):
         boxes.append((res.names[int(b.cls)], float(b.conf), x1, y1, x2, y2,
                       (x2 - x1) * (y2 - y1)))
     for d in insts:
+        bx1, by1, bx2, by2 = d['box']
+        iarea = max(1.0, float(bx2 - bx1) * float(by2 - by1))
         best = None
         for name, conf, x1, y1, x2, y2, area in boxes:
-            if x1 - 4 <= d['u'] <= x2 + 4 and y1 - 4 <= d['v'] <= y2 + 4:
-                if best is None or area < best[2]:
-                    best = (name, conf, area)
+            if not (x1 - 4 <= d['u'] <= x2 + 4 and y1 - 4 <= d['v'] <= y2 + 4):
+                continue
+            if area > 12.0 * iarea:
+                continue    # a big box (e.g. a coke can's) must not swallow small neighbours
+            ov_w = min(bx2, x2) - max(bx1, x1)
+            ov_h = min(by2, y2) - max(by1, y1)
+            if ov_w <= 0 or ov_h <= 0 or (ov_w * ov_h) < 0.5 * iarea:
+                continue    # require the yolo box to actually cover the instance
+            if best is None or area < best[2]:
+                best = (name, conf, area)
         if best is not None:
             d['label'] = best[0].replace(' ', '_')
             d['cls_conf'] = best[1]
