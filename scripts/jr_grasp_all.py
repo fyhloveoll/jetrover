@@ -24,6 +24,7 @@ from kinematics_msgs.srv import SetRobotPose, GetRobotPose
 from servo_controller_msgs.msg import ServosPosition, ServoPosition
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 import jr_detect_objects as det     # object-agnostic detection layer (shared)
 
 DUR = float(os.environ.get('JR_DUR', '2.0'))
@@ -37,8 +38,10 @@ YAW_NEUTRAL = float(os.environ.get('JR_YAW_NEUTRAL', '504'))
 YAW_GAIN = float(os.environ.get('JR_YAW_GAIN', '4.17'))   # pulse/deg; sign NEEDS calibration
 ABORT_FAILS = 3   # reachability is decided purely by the multi-pitch IK solver (no x thresholds)
 AUTO_DRIVE = os.environ.get('JR_AUTO_DRIVE', '1') != '0'  # M6: drive the base to fetch out-of-reach / too-close targets
-MAX_DRIVES = int(os.environ.get('JR_MAX_DRIVES', '5'))    # total base moves per run (fetch/strafe/reverse)
-STRAFE_SIGN = float(os.environ.get('JR_STRAFE_SIGN', '1'))  # +1: Twist.linear.y>0 moves toward arm +y (left); flip if reversed on-robot
+MAX_DRIVES = int(os.environ.get('JR_MAX_DRIVES', '8'))    # total base moves per run (fetch/strafe/reverse)
+STRAFE_SIGN = float(os.environ.get('JR_STRAFE_SIGN', '1'))
+SCAN_YAW = float(os.environ.get('JR_SCAN_YAW', '0'))        # lidar mounting yaw offset (rad); probe on-robot
+CLEAR_MARGIN = float(os.environ.get('JR_CLEAR_MARGIN', '0.28'))  # keep this much lidar clearance beyond the leg  # +1: Twist.linear.y>0 moves toward arm +y (left); flip if reversed on-robot
 MAX_W = float(os.environ.get('JR_MAX_WIDTH', '0.048'))   # gripper max opening (m); wider = ungrippable (a 5.3cm coke can does not fit)
 STATS = os.path.expanduser('~/jetrover_ws/grasp_stats.csv')   # per-attempt log, accumulates ACROSS runs/reboots
 ANGLE_FRAMES = int(os.environ.get('JR_ANGLE_FRAMES', '6'))   # frames to average the angle over
@@ -79,6 +82,8 @@ class GraspAll(Node):
         self.create_subscription(Image, '/depth_cam/depth/image_raw', self._d, 1)
         self.create_subscription(CameraInfo, '/depth_cam/depth/camera_info', self._i, 1)
         self.create_subscription(Odometry, '/odom_raw', self._o, 1)
+        self.scan = None
+        self.create_subscription(LaserScan, '/scan', self._s, 1)
         self.joints = self.create_publisher(ServosPosition, 'servo_controller', 1)
         self.cmd = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.ik = self.create_client(SetRobotPose, '/kinematics/set_pose_target')
@@ -99,6 +104,7 @@ class GraspAll(Node):
     def _d(self, m): self.depth = self.bridge.imgmsg_to_cv2(m, '16UC1')
     def _i(self, m): self.K = list(m.k)
     def _o(self, m): self.odom = m.pose.pose.position
+    def _s(self, m): self.scan = m
 
     def spin(self, n=5):
         for _ in range(n):
@@ -132,6 +138,23 @@ class GraspAll(Node):
 
     def home(self):
         self.move(1.2, FLOOR + ((10, GRIPPER_OPEN),))
+
+    def board_alive(self):
+        # camera-verified actuation. During the classic lockup EVERY telemetry channel
+        # lies (servo_states echoes goals, odom integrates commanded velocity while the
+        # wheels stand still) -- the only honest witness is the camera: command a small
+        # arm tilt and check the scene actually changed. Run this BEFORE a batch so we
+        # never execute a whole phantom run again (ga15 was one).
+        if not self.fresh():
+            return False
+        g0 = cv2.cvtColor(cv2.resize(self.rgb, (160, 90)), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        self.move(0.8, ((2, 660),))     # small tilt away from FLOOR's (2,700)
+        self.fresh()
+        g1 = cv2.cvtColor(cv2.resize(self.rgb, (160, 90)), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        self.move(0.8, ((2, 700),))     # restore
+        diff = float(np.abs(g1 - g0).mean())
+        print('[LIVENESS] scene diff %.2f (board dead if < 2.0)' % diff)
+        return diff >= 2.0
 
     # ---- perception ----
     def detect(self):
@@ -230,8 +253,14 @@ class GraspAll(Node):
             if not cands:
                 print('  [RECENTER] lost %s after rotating' % target['label'])
                 return None
+            prev = abs(cur['u'] - cx)
             cur = min(cands, key=lambda o: abs(o['u'] - cx))
             print('  [RECENTER] iter%d servo1=%d -> u=%d' % (it, s1, cur['u']))
+            if abs(cur['u'] - cx) > prev - 40:
+                # no progress: rotating just brings OTHER same-color objects to the edge
+                # (it chased placed cubes in a loop once, wandering the base 1m) -> abort
+                print('  [RECENTER] no progress -> abort')
+                return None
         return cur
 
     def paper_contour(self):
@@ -322,7 +351,25 @@ class GraspAll(Node):
             print('  reject %s: implausible height %.3fm -> bad localization' % (inst['id'], h))
             return None, 0.0
         z = float(base[2]) + h * GRASP_FRAC
-        return [float(base[0]) + FWD, float(base[1]) - Y_OFFSET, z], h
+        pos = [float(base[0]) + FWD, float(base[1]) - Y_OFFSET, z]
+        if pos[0] < 0.08:
+            # behind/under the robot = garbage from an extreme rotated view
+            print('  reject %s: insane x=%.2f' % (inst['id'], pos[0]))
+            return None, 0.0
+        return pos, h
+
+    def clearance(self, direction):
+        # min lidar range within +-24deg of the intended motion direction (base frame:
+        # 0=forward, +pi/2=left, pi=back). None if the lidar is off. The camera cannot
+        # see sideways -- a strafe nearly hit a wall -- so base motion consults the scan.
+        m = self.scan
+        if m is None:
+            return None
+        rng = np.asarray(m.ranges, dtype=np.float32)
+        ang = m.angle_min + np.arange(rng.size) * m.angle_increment + SCAN_YAW
+        d = (ang - direction + np.pi) % (2 * np.pi) - np.pi
+        sel = (np.abs(d) <= 0.42) & (rng > m.range_min) & (rng < m.range_max)
+        return float(rng[sel].min()) if np.any(sel) else None
 
     # ---- base motion (M6 fetch: drive to bring far/too-close targets into reach) ----
     def drive(self, dist, axis='x', speed=0.07):
@@ -336,6 +383,18 @@ class GraspAll(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
         if self.odom is None:
             print('  [DRIVE] no odom, not driving'); return 0.0
+        # lidar safety: check clearance in the motion direction, truncate the leg if a
+        # wall/furniture is close (the camera is blind sideways/backwards)
+        direction = (0.0 if dist > 0 else math.pi) if axis != 'y' else \
+                    (math.pi / 2 if dist > 0 else -math.pi / 2)
+        c = self.clearance(direction)
+        if c is not None and c < abs(dist) + CLEAR_MARGIN:
+            allowed = max(0.0, c - CLEAR_MARGIN)
+            print('  [DRIVE %s] obstacle at %.2fm -> leg truncated %.2f -> %.2f' %
+                  (axis, c, abs(dist), allowed))
+            if allowed < 0.02:
+                return 0.0
+            dist = allowed if dist > 0 else -allowed
         x0, y0 = self.odom.x, self.odom.y
         v = float(speed if dist > 0 else -speed)
         tw = Twist()
@@ -343,10 +402,17 @@ class GraspAll(Node):
             tw.linear.y = v * STRAFE_SIGN
         else:
             tw.linear.x = v
-        moved = 0.0; t0 = time.time()
+        moved = 0.0; t0 = time.time(); k = 0
         while moved < abs(dist) and time.time() - t0 < 20:
-            self.cmd.publish(tw); rclpy.spin_once(self, timeout_sec=0.05)
+            # ~10Hz command stream (denser serial traffic raises the lockup risk)
+            self.cmd.publish(tw); rclpy.spin_once(self, timeout_sec=0.1)
             moved = ((self.odom.x - x0) ** 2 + (self.odom.y - y0) ** 2) ** 0.5
+            k += 1
+            if k % 4 == 0:
+                c = self.clearance(direction)
+                if c is not None and c < 0.20:
+                    print('  [DRIVE %s] EMERGENCY STOP: obstacle %.2fm' % (axis, c))
+                    break
         for _ in range(6):
             self.cmd.publish(Twist()); rclpy.spin_once(self, timeout_sec=0.02)
         print('  [DRIVE %s] moved %+.3fm (target %+.3f)' % (axis, moved if dist > 0 else -moved, dist))
@@ -494,7 +560,7 @@ class GraspAll(Node):
                     # sanity-gate the RAW paper point (before the spread offset -- the
                     # offset once pushed a legit point past the gate): a false-white
                     # region gave an absurd [0.86,-0.54] once
-                    if float(base[0]) + FWD > 0.35 or abs(float(base[1])) > 0.31:
+                    if float(base[0]) + FWD > 0.38 or abs(float(base[1])) > 0.36:
                         print('  [PLACE] absurd paper point %s -> ignoring paper detection'
                               % np.round(base[:2], 3).tolist())
                     else:
@@ -576,6 +642,11 @@ def main():
     # GRASP-ALL: clear the floor. blacklist = (u,v) of failed/unreachable targets so
     # we never re-pick them (no infinite loop); verify by re-checking the pickup spot
     # with an EMPTY gripper after placing (robust, unlike in-gripper guessing).
+    if not node.board_alive():
+        print('!! BOARD DEAD: arm commands are not executing (telemetry/odom LIE during')
+        print('!! this lockup). Power-cycle the board (main switch OFF -> ON), then rerun.')
+        node.destroy_node(); rclpy.shutdown(); return
+
     node.home()
     grabbed, attempts, consec = 0, 0, 0
     blacklist = []
@@ -601,7 +672,9 @@ def main():
                 continue                                   # on the place paper
             if any(abs(d['u'] - bu) < 45 and abs(d['v'] - bv) < 45 for bu, bv in blacklist):
                 continue                                   # known failed/unreachable
-            if MAX_W > 0 and d.get('width_m', 0.0) > MAX_W:
+            if MAX_W > 0 and d.get('width_m', 0.0) > MAX_W and d.get('depth', 1.0) < 0.42:
+                # width is only trusted NEAR (far blobs read wide); far candidates get
+                # fetched closer first and re-judged with an accurate measurement
                 print('  skip %s: width %.0fmm > gripper %.0fmm' %
                       (d['id'], d['width_m'] * 1000, MAX_W * 1000))
                 continue                                   # physically ungrippable
@@ -637,7 +710,7 @@ def main():
                 return False
         return True
 
-    while rclpy.ok() and attempts < 12:
+    while rclpy.ok() and attempts < int(os.environ.get("JR_MAX_ATTEMPTS", "20")):
         cand = pickable()
         # CLOSEST-FIRST: anything cut off at the bottom edge sits right at the wheels --
         # reverse to resolve it BEFORE any grasp or fetch drive (fetch drives crushed one).
@@ -685,7 +758,8 @@ def main():
             print('  grasp error: %s' % e); break
         if st != 'LIFTED':
             if st == 'OUT_OF_REACH' and AUTO_DRIVE and drives < MAX_DRIVES:
-                if abs(pos0[1]) >= 0.12 and strafe_clear(cand, pos0):
+                if (abs(pos0[1]) >= 0.12 and strafe_clear(cand, pos0)
+                        and abs(fetch_lat + pos0[1]) <= 0.30):   # net lateral budget: no wandering
                     # M6 lateral fetch: mecanum-strafe to line the target up first
                     print('[M6] %s lateral (y=%+.2f) -> strafing to align' % (orig['id'], pos0[1]))
                     node.drive(pos0[1], axis='y'); node.settle_after_drive()
@@ -703,13 +777,27 @@ def main():
                     node.home(); continue
             blacklist.append((orig['u'], orig['v'])); consec += 1
             log.append((orig['id'], st, msg)); log_stat(orig, st, msg); node.home(); continue
+        if os.environ.get('JR_CARRY', '0') == '1':
+            # mission mode (jr_mission.py): keep the cube in the gripper and exit -- the
+            # mission NAVIGATES to the delivery pose and releases there. Arm is already
+            # at OBSERVE with the gripper closed; no local place, no return drive.
+            grabbed += 1
+            log.append((orig['id'], 'CARRYING', msg)); log_stat(orig, 'CARRYING', msg)
+            print('CARRYING: cube in gripper, exiting for delivery (no local place).')
+            break
         if fetch_off != 0.0 or fetch_lat != 0.0:
             # carry the cube back to the start point so the paper is where we left it
             print('[M6] returning (x %+.2f, y %+.2f) before placing' % (-fetch_off, -fetch_lat))
-            if abs(fetch_lat) >= 0.01:
-                node.drive(-fetch_lat, axis='y')
-            if abs(fetch_off) >= 0.01:
-                node.drive(-fetch_off)
+            rem = -fetch_lat                    # legs can exceed drive()'s 0.45 clamp:
+            for _ in range(3):                  # loop until the full distance is undone
+                if abs(rem) < 0.01:
+                    break
+                rem -= node.drive(rem, axis='y')
+            rem = -fetch_off
+            for _ in range(3):
+                if abs(rem) < 0.01:
+                    break
+                rem -= node.drive(rem)
             node.settle_after_drive()
             fetch_off = 0.0; fetch_lat = 0.0; blacklist.clear()
         ppos = node.place_on_paper()
@@ -727,6 +815,20 @@ def main():
             print('  -> MISS (still there) -> blacklisted')
         if consec >= ABORT_FAILS:
             print('!! %d consecutive fails -> board may be locked / all hard. ABORT.' % consec); break
+
+    if fetch_off != 0.0 or fetch_lat != 0.0:
+        # never end a run displaced: drive back to the start point
+        print('[M6] run ending displaced -> returning to start (x %+.2f, y %+.2f)' % (-fetch_off, -fetch_lat))
+        rem = -fetch_lat
+        for _ in range(3):
+            if abs(rem) < 0.01:
+                break
+            rem -= node.drive(rem, axis='y')
+        rem = -fetch_off
+        for _ in range(3):
+            if abs(rem) < 0.01:
+                break
+            rem -= node.drive(rem)
 
     print('\n===== GRASP-ALL DONE =====  grabbed %d / %d attempts (blacklisted %d)' %
           (grabbed, attempts, len(blacklist)))

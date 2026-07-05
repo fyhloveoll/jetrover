@@ -89,8 +89,8 @@ def detect(rgb, depth, K):
     insts = []
     for i in range(1, nlab):
         area = stats[i, cv2.CC_STAT_AREA]
-        if area < MIN_AREA:
-            continue
+        if area < 90:
+            continue   # hard noise floor; the size-vs-distance gate comes after depth is known
         x, y, bw, bh = stats[i, 0], stats[i, 1], stats[i, 2], stats[i, 3]
         cu, cv_ = int(cent[i][0]), int(cent[i][1])
         cm = (lab == i).astype(np.uint8)
@@ -104,10 +104,19 @@ def detect(rgb, depth, K):
                 a += 90.0
             ang = ((a + 45.0) % 90.0) - 45.0
         dep = float(np.median(z[(lab == i) & (z > 0)])) if np.any((lab == i) & (z > 0)) else 0.0
+        # distance-scaled area gate: the same physical cube shrinks with 1/z^2 in pixels
+        # (a 3cm cube at 0.7m is ~230px -- a fixed 250px gate made far cubes invisible
+        # to the survey). Gate on the equivalent area at the 0.35m reference distance.
+        if dep > 0 and area < MIN_AREA * (0.35 / max(dep, 0.2)) ** 2:
+            continue
+        if dep <= 0 and area < MIN_AREA:
+            continue
         width_m = 0.0
         if rect is not None and dep > 0:
             (_, _), (rw2, rh2), _ = rect
-            width_m = min(rw2, rh2) * dep / fx   # metric short side = the span the gripper must clear
+            # -4px: the CLOSE morphology dilates the blob; negligible near (80px wide)
+            # but it inflated a far 43mm cube (34px) to a false 51mm reading
+            width_m = max(0.0, min(rw2, rh2) - 4.0) * dep / fx
         insts.append({'label': color_label(rgb, cm), 'u': cu, 'v': cv_,
                       'box': (x, y, x + bw, y + bh), 'area': float(area),
                       'angle': float(ang), 'rect': rect, 'depth': dep, 'width_m': width_m,
