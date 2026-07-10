@@ -1,0 +1,23 @@
+# JetRover demo stack autostart (M8). Install on the robot:
+#   sudo cp ~/jetrover_ws/deploy/jr-stack.service /etc/systemd/system/
+#   sudo cp ~/jetrover_ws/deploy/jr_stack.sh /home/ubuntu/jetrover_ws/ && chmod +x ~/jetrover_ws/jr_stack.sh
+#   sudo systemctl daemon-reload && sudo systemctl enable jr-stack
+# Disable for manual sessions: sudo systemctl disable --now jr-stack
+[Unit]
+Description=JetRover demo stack (bringup + kinematics)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=JR_STACK_NAV=0
+ExecStart=/home/ubuntu/jetrover_ws/jr_stack.sh
+Restart=on-failure
+RestartSec=8
+# clean SIGTERM shutdown only -- kill -9 on the serial driver corrupts the MCU (lesson)
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
