@@ -18,6 +18,8 @@ import numpy as np
 import cv2
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 from kinematics_msgs.srv import SetRobotPose, GetRobotPose
@@ -78,12 +80,24 @@ class GraspAll(Node):
         super().__init__('jr_grasp_all')
         self.bridge = CvBridge()
         self.rgb = self.depth = self.K = self.odom = None
+        self.scan = None
+        self.scan_t = 0.0
+        # /scan lives on a DEDICATED mini-node + executor: on the main node the 10Hz
+        # scan starves behind the 30Hz rgb / 22Hz depth flood (subscription-order
+        # tricks proved non-deterministic) and the in-motion e-stop went blind on a
+        # ~4s-stale scan -- drove into a book twice (07-10). The mini executor only
+        # ever serves the scan, so pumping it in the drive loop is starvation-proof.
+        self.mon = rclpy.create_node('jr_scan_mon')
+        # SensorDataQoS (best-effort): the default RELIABLE sub stalls under motion
+        # (reliable-protocol bookkeeping in a busy process starves the stream; a
+        # concurrent best-effort subscriber unsticking it was the giveaway, 07-10)
+        self.mon.create_subscription(LaserScan, '/scan', self._s, qos_profile_sensor_data)
+        self.mon_exec = SingleThreadedExecutor()
+        self.mon_exec.add_node(self.mon)
+        self.create_subscription(Odometry, '/odom_raw', self._o, 1)
         self.create_subscription(Image, '/depth_cam/rgb/image_raw', self._rgb, 1)
         self.create_subscription(Image, '/depth_cam/depth/image_raw', self._d, 1)
         self.create_subscription(CameraInfo, '/depth_cam/depth/camera_info', self._i, 1)
-        self.create_subscription(Odometry, '/odom_raw', self._o, 1)
-        self.scan = None
-        self.create_subscription(LaserScan, '/scan', self._s, 1)
         self.joints = self.create_publisher(ServosPosition, 'servo_controller', 1)
         self.cmd = self.create_publisher(Twist, '/controller/cmd_vel', 1)
         self.ik = self.create_client(SetRobotPose, '/kinematics/set_pose_target')
@@ -104,7 +118,7 @@ class GraspAll(Node):
     def _d(self, m): self.depth = self.bridge.imgmsg_to_cv2(m, '16UC1')
     def _i(self, m): self.K = list(m.k)
     def _o(self, m): self.odom = m.pose.pose.position
-    def _s(self, m): self.scan = m
+    def _s(self, m): self.scan = m; self.scan_t = time.time()
 
     def spin(self, n=5):
         for _ in range(n):
@@ -362,6 +376,7 @@ class GraspAll(Node):
         # min lidar range within +-24deg of the intended motion direction (base frame:
         # 0=forward, +pi/2=left, pi=back). None if the lidar is off. The camera cannot
         # see sideways -- a strafe nearly hit a wall -- so base motion consults the scan.
+        self.mon_exec.spin_once(timeout_sec=0.005)  # drain any pending scan (0.0 executes nothing in rclpy)
         m = self.scan
         if m is None:
             return None
@@ -387,6 +402,9 @@ class GraspAll(Node):
         # wall/furniture is close (the camera is blind sideways/backwards)
         direction = (0.0 if dist > 0 else math.pi) if axis != 'y' else \
                     (math.pi / 2 if dist > 0 else -math.pi / 2)
+        t_req = time.time()
+        while self.scan_t < t_req and time.time() - t_req < 0.4:
+            self.mon_exec.spin_once(timeout_sec=0.05)   # insist on a fresh pre-drive scan
         c = self.clearance(direction)
         if c is not None and c < abs(dist) + CLEAR_MARGIN:
             allowed = max(0.0, c - CLEAR_MARGIN)
@@ -402,17 +420,29 @@ class GraspAll(Node):
             tw.linear.y = v * STRAFE_SIGN
         else:
             tw.linear.x = v
-        moved = 0.0; t0 = time.time(); k = 0
+        moved = 0.0; t0 = time.time(); warned = False
         while moved < abs(dist) and time.time() - t0 < 20:
-            # ~10Hz command stream (denser serial traffic raises the lockup risk)
-            self.cmd.publish(tw); rclpy.spin_once(self, timeout_sec=0.1)
+            # ~10Hz command stream (denser serial traffic raises the lockup risk).
+            # DRAIN callbacks for the whole inter-command window: a single spin_once
+            # starves the 10Hz scan behind 30Hz rgb + 22Hz depth + 48Hz odom, so the
+            # e-stop was checking a frozen pre-drive scan (drove into a book, 07-10).
+            self.cmd.publish(tw)
+            end = time.time() + 0.1
+            while time.time() < end:
+                rclpy.spin_once(self, timeout_sec=0.01)
+                self.mon_exec.spin_once(timeout_sec=0.005)  # starvation-proof scan pump
             moved = ((self.odom.x - x0) ** 2 + (self.odom.y - y0) ** 2) ** 0.5
-            k += 1
-            if k % 4 == 0:
+            if os.environ.get('JR_DRIVE_DEBUG') == '1':
+                print('  [DBG] t=%4.1f moved=%.3f scan_age=%.2f' %
+                      (time.time() - t0, moved, time.time() - self.scan_t))
+            if time.time() - self.scan_t < 1.0:
                 c = self.clearance(direction)
                 if c is not None and c < 0.20:
                     print('  [DRIVE %s] EMERGENCY STOP: obstacle %.2fm' % (axis, c))
                     break
+            elif self.scan is not None and not warned:
+                print('  [DRIVE %s] warn: scan stale %.1fs, e-stop blind' %
+                      (axis, time.time() - self.scan_t)); warned = True
         for _ in range(6):
             self.cmd.publish(Twist()); rclpy.spin_once(self, timeout_sec=0.02)
         print('  [DRIVE %s] moved %+.3fm (target %+.3f)' % (axis, moved if dist > 0 else -moved, dist))
@@ -629,6 +659,17 @@ def main():
         print('servo bridge not connected'); return
     if not node.fresh():
         print('no camera'); return
+
+    if mode == 'drivetest':
+        # guarded-motion test: drivetest <dist> [x|y] -- exercises the REAL drive()
+        # (lidar truncation / refusal / in-motion e-stop) with no grasping
+        dist = float(sys.argv[2]) if len(sys.argv) > 2 else 0.3
+        axis = sys.argv[3] if len(sys.argv) > 3 else 'x'
+        if not node.board_alive():
+            print('!! BOARD DEAD, not driving'); node.destroy_node(); rclpy.shutdown(); return
+        moved = node.drive(dist, axis=axis)
+        print('[DRIVETEST] requested %+.2f on %s, moved %+.3f' % (dist, axis, moved))
+        node.destroy_node(); rclpy.shutdown(); return
 
     if mode == 'survey':
         node.home(); node.fresh()
