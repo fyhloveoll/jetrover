@@ -8,6 +8,7 @@
 # Detection format {id,label,box,centroid,angle,depth,area}; a YOLO backend can emit
 # the same format and the grasp layer (grasp-by-id) never changes.
 #   python3 jr_detect_objects.py [rgb.png] [depth.npy] [K.npy]
+import os
 import sys
 import numpy as np
 import cv2
@@ -15,7 +16,8 @@ import cv2
 RGB = sys.argv[1] if len(sys.argv) > 1 else 'scene_for_ids.png'
 DEPTH = sys.argv[2] if len(sys.argv) > 2 else 'scene_for_ids_depth.npy'
 KF = sys.argv[3] if len(sys.argv) > 3 else 'scene_for_ids_K.npy'
-ABOVE = 0.012          # metres above the floor plane to count as an object
+ABOVE = float(os.environ.get('JR_MIN_H', '0.012'))  # metres above floor to count as object
+                       # (flat things -- a lying pen/usb stick ~1cm -- skate under 0.012)
 MIN_AREA = 250.0       # min blob area (px) to be an instance
 
 # ---- optional YOLO semantic labels (fusion) ----
@@ -26,6 +28,7 @@ import os as _os
 YOLO_ON = _os.environ.get('JR_YOLO', '0') == '1'
 YOLO_CONF = float(_os.environ.get('JR_YOLO_CONF', '0.35'))
 _YOLO = None
+_LBL_MEMO = {}   # (u//40, v//40) -> [label, conf, ttl] sticky-name cache (see yolo_label)
 
 
 def _yolo():
@@ -86,6 +89,19 @@ def yolo_label(rgb, insts):
         if best is not None:
             d['label'] = best[0].replace(' ', '_')
             d['cls_conf'] = best[1]
+            _LBL_MEMO[(d['u'] // 40, d['v'] // 40)] = [d['label'], best[1], 12]
+        else:
+            # STICKY NAMES: near-threshold open-vocab confidences flicker frame to
+            # frame; an instance named at ~this spot recently keeps its name
+            for du in (0, -1, 1):
+                for dv in (0, -1, 1):
+                    m = _LBL_MEMO.get((d['u'] // 40 + du, d['v'] // 40 + dv))
+                    if m and m[2] > 0:
+                        d['label'] = m[0]; d['cls_conf'] = m[1]; m[2] -= 1
+                        break
+                else:
+                    continue
+                break
 # hue(0-180) -> name, only to LABEL a detected object (never gates detection)
 HUE_NAMES = [(10, 'red'), (22, 'orange'), (33, 'yellow'), (88, 'green'),
              (135, 'blue'), (160, 'purple'), (180, 'red')]

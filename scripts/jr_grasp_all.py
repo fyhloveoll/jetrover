@@ -364,7 +364,9 @@ class GraspAll(Node):
             # (partial view / merged blob) -> reject rather than grasp at a bad point
             print('  reject %s: implausible height %.3fm -> bad localization' % (inst['id'], h))
             return None, 0.0
-        z = float(base[2]) + h * GRASP_FRAC
+        z = float(base[2]) + h * GRASP_FRAC + float(os.environ.get('JR_Z_TRIM', '0'))
+        # JR_Z_TRIM: signed metres, on-robot calibration knob for flat objects (a lying
+        # pen registers h~0.006 -> z is floor+2mm; trim while watching one attempt)
         pos = [float(base[0]) + FWD, float(base[1]) - Y_OFFSET, z]
         if pos[0] < 0.08:
             # behind/under the robot = garbage from an extreme rotated view
@@ -457,7 +459,10 @@ class GraspAll(Node):
         pc = self.paper_contour()
         ep = self.get_endpoint()
         best = None
+        targets = [t.strip() for t in os.environ.get('JR_TARGET', '').split(',') if t.strip()]
         for d in self.detect():
+            if targets and d['label'] not in targets:
+                continue      # never drive toward something we'd refuse to pick
             if self.on_paper(pc, d['u'], d['v']):
                 continue
             if d['box'][3] >= self.rgb.shape[0] - 3:
@@ -485,6 +490,7 @@ class GraspAll(Node):
         self.fresh(); self.fresh()
         self.pc_floor = None
         self.pc_obs = None
+        det._LBL_MEMO.clear()   # sticky names are pixel-keyed; the drive moved every pixel
 
     # ---- one grasp (location + yaw-aligned + auto-height) ----
     def grasp(self, inst):
@@ -754,8 +760,19 @@ def main():
                 return False
         return True
 
+    sem_targets = bool(os.environ.get('JR_TARGET', '').strip())
+    flicker = 0
     while rclpy.ok() and attempts < int(os.environ.get("JR_MAX_ATTEMPTS", "20")):
         cand = pickable()
+        # open-vocab names near the conf threshold FLICKER frame to frame; with a
+        # semantic filter one unnamed frame reads as "floor clear" (ended a run with
+        # a pen still down, 07-10) -- retry a few frames before believing emptiness
+        if not cand and sem_targets and flicker < 3:
+            flicker += 1
+            print('[FLICKER] no named target this frame -> retry %d/3' % flicker)
+            continue
+        if cand:
+            flicker = 0
         # CLOSEST-FIRST: anything cut off at the bottom edge sits right at the wheels --
         # reverse to resolve it BEFORE any grasp or fetch drive (fetch drives crushed one).
         # EXCEPT mid-fetch (fetch_off>0): cubes only look "too close" because WE drove
