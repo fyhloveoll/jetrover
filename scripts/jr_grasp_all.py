@@ -40,7 +40,7 @@ YAW_NEUTRAL = float(os.environ.get('JR_YAW_NEUTRAL', '504'))
 YAW_GAIN = float(os.environ.get('JR_YAW_GAIN', '4.17'))   # pulse/deg; sign NEEDS calibration
 ABORT_FAILS = 3   # reachability is decided purely by the multi-pitch IK solver (no x thresholds)
 AUTO_DRIVE = os.environ.get('JR_AUTO_DRIVE', '1') != '0'  # M6: drive the base to fetch out-of-reach / too-close targets
-MAX_DRIVES = int(os.environ.get('JR_MAX_DRIVES', '8'))    # total base moves per run (fetch/strafe/reverse)
+MAX_DRIVES = int(os.environ.get('JR_MAX_DRIVES', '12'))   # total base moves per run (fetch/strafe/reverse)
 STRAFE_SIGN = float(os.environ.get('JR_STRAFE_SIGN', '1'))
 SCAN_YAW = float(os.environ.get('JR_SCAN_YAW', '0'))        # lidar mounting yaw offset (rad); probe on-robot
 CLEAR_MARGIN = float(os.environ.get('JR_CLEAR_MARGIN', '0.28'))  # keep this much lidar clearance beyond the leg  # +1: Twist.linear.y>0 moves toward arm +y (left); flip if reversed on-robot
@@ -105,6 +105,7 @@ class GraspAll(Node):
         self.ik.wait_for_service(timeout_sec=5.0)
         self.fk.wait_for_service(timeout_sec=5.0)
         self.place_n = 0   # placements so far -> cycles fallback drop offsets
+        self.zone_seen = False   # drop zone detected at least once this run
         # paper contours CACHED from the first (empty-paper) sighting per camera pose:
         # once cubes cover the paper its white blob shrinks below the detection floor,
         # live detection returns None, and on-paper exclusion would silently die --
@@ -291,17 +292,60 @@ class GraspAll(Node):
                 return None
         return cur
 
+    def _apriltags(self):
+        # AprilTag 36h11 corner cards on the drop zone (version-portable cv2.aruco)
+        gray = cv2.cvtColor(self.rgb, cv2.COLOR_BGR2GRAY)
+        try:
+            d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+            try:
+                det_ = cv2.aruco.ArucoDetector(d, cv2.aruco.DetectorParameters())
+                corners, ids, _ = det_.detectMarkers(gray)
+            except AttributeError:      # cv2 4.x legacy API (the robot)
+                corners, ids, _ = cv2.aruco.detectMarkers(
+                    gray, d, parameters=cv2.aruco.DetectorParameters_create())
+        except Exception:
+            return []
+        return [c[0] for c in corners] if ids is not None and len(ids) else []
+
     def paper_contour(self):
-        # the white place paper's actual CONTOUR (not a loose bbox -- a bbox wrongly
-        # swallows floor cubes beside the card). Used for point-in-polygon exclusion.
+        c = self._zone_detect()
+        if c is not None:
+            self.zone_seen = True
+        return c
+
+    def _zone_detect(self):
+        # DROP-ZONE contour. Default mode 'dark': a DARK mat seeded by AprilTag corner
+        # cards -- glare on the glossy floor reads as white, and it hijacked the white-
+        # paper detector ("absurd paper point", placements dumped on the floor, 07-11).
+        # JR_ZONE=white restores the old white-paper detector.
+        if os.environ.get('JR_ZONE', 'dark') == 'white':
+            hsv = cv2.cvtColor(self.rgb, cv2.COLOR_BGR2HSV)
+            wm = cv2.inRange(hsv, np.array([0, 0, 205]), np.array([180, 30, 255]))
+            wm = cv2.morphologyEx(wm, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+            cnts, _ = cv2.findContours(wm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not cnts:
+                return None
+            c = max(cnts, key=cv2.contourArea)
+            return c if cv2.contourArea(c) >= 4000 else None
         hsv = cv2.cvtColor(self.rgb, cv2.COLOR_BGR2HSV)
-        wm = cv2.inRange(hsv, np.array([0, 0, 205]), np.array([180, 30, 255]))
-        wm = cv2.morphologyEx(wm, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-        cnts, _ = cv2.findContours(wm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        dm = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 90]))   # dark mat
+        dm = cv2.morphologyEx(dm, cv2.MORPH_CLOSE, np.ones((11, 11), np.uint8))
+        cnts, _ = cv2.findContours(dm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = [c for c in cnts if cv2.contourArea(c) >= 4000]
         if not cnts:
             return None
-        c = max(cnts, key=cv2.contourArea)
-        return c if cv2.contourArea(c) >= 4000 else None
+        tags = self._apriltags()
+        if tags:
+            # the zone is the dark region carrying/adjacent to a tag (tags kill the
+            # "any dark shadow" ambiguity the way they killed the glare one)
+            for c in sorted(cnts, key=cv2.contourArea, reverse=True):
+                for t in tags:
+                    tc = t.mean(axis=0)
+                    if cv2.pointPolygonTest(c, (float(tc[0]), float(tc[1])), True) > -25:
+                        return c
+            return None
+        # no tag visible (occluded by cubes): largest dark blob as fallback
+        return max(cnts, key=cv2.contourArea)
 
     @staticmethod
     def on_paper(pc, u, v):
@@ -636,6 +680,7 @@ class GraspAll(Node):
             if pc is None:
                 self.move(1.0, OBSERVE)   # sweep failed: face forward again
         pos = None
+        on_zone = False
         if pc is not None:
             cell = self.pick_drop_cell(pc)
             if cell is None:
@@ -657,6 +702,7 @@ class GraspAll(Node):
                     else:
                         off = (0.0, 0.03, -0.03, 0.05, -0.05)[self.place_n % 5]
                         pos = [float(base[0]) + FWD, float(base[1]) + off, float(base[2]) + 0.05]
+                        on_zone = True
                         print('  [PLACE] paper cell px=%s off=%+.2f -> %s'
                               % (list(cell), off, np.round(pos, 3).tolist()))
         if pos is None:
@@ -678,12 +724,15 @@ class GraspAll(Node):
             print('  [PLACE] WARNING: no IK for %s -> using fixed front spot y=%+.2f'
                   % (np.round(pos, 3).tolist(), off))
             drop = [0.22, off, 0.07]
+            on_zone = False
             lp3, _ = self.solve_ik_multi(drop)
             if lp3:
                 self.move(1.2, ((1, lp3[0]), (2, lp3[1]), (3, lp3[2]), (4, lp3[3]), (5, lp3[4])))
         self.move(0.6, ((10, GRIPPER_OPEN),))
         self.place_n += 1
-        return drop   # arm-frame drop point (for the placed-cube memory)
+        # on_zone False = fallback drop on open floor: an OBSTACLE but not "stored" --
+        # it should be re-collected once the zone is actually seen (07-11)
+        return drop, on_zone
 
 
 def log_stat(inst, result, msg):
@@ -755,7 +804,9 @@ def main():
     node.home()
     grabbed, attempts, consec = 0, 0, 0
     blacklist = []
-    placed_pts = []   # arm-frame (x,y) of every drop -- drive-proof "we placed that" memory
+    hard_black = []     # start-frame (x,y) parked as unreachable-without-budget; never cleared
+    placed_pts = []   # arm-frame (x,y,z) of on-zone drops -- excluded as targets + obstacles
+    floor_drops = []  # fallback drops on open floor -- obstacles only, re-collected once zone seen
     log = []
 
     def pickable():
@@ -795,6 +846,13 @@ def main():
                 # compensated; the old at-start-only gate let a displaced robot
                 # re-pick its own placements and re-place them elsewhere, 07-11)
                 continue
+            if any(abs(pos[0] + fetch_off - hx) < 0.06 and abs(pos[1] + fetch_lat - hy) < 0.06
+                   for hx, hy in hard_black):
+                continue                                   # parked as unreachable this run
+            if (not node.zone_seen) and any(
+                    abs(pos[0] + fetch_off - fx) < 0.06 and abs(pos[1] + fetch_lat - fy) < 0.06
+                    for fx, fy, _fz in floor_drops):
+                continue    # re-placing would just drop it again until the zone is seen
             out.append((pos, d))                           # reachability decided by IK in grasp()
         out.sort(key=lambda t: t[0][0])                    # nearest first
         return out
@@ -813,12 +871,38 @@ def main():
             legs.append((axis, moved))
         return moved
 
+    def placed_in_sweep(ax, s):
+        # a cube placed AFTER we drove out sits on the "known-driven" path (crushed a
+        # green one, 07-11): clamp the leg before the nearest placed cube in its sweep
+        lim = s
+        for px, py, _pz in placed_pts + floor_drops:
+            ox, oy = px - fetch_off, py - fetch_lat     # current frame
+            if ax == 'y':
+                if -0.05 < ox < 0.30 and (0 < oy < lim + 0.12 if s > 0 else lim - 0.12 < oy < 0):
+                    lim = (oy - 0.14) if s > 0 else (oy + 0.14)
+            else:
+                if abs(oy) < 0.14 and (0.30 < ox < lim + 0.30 if s > 0 else lim + 0.10 < ox < 0.10):
+                    lim = (ox - 0.34) if s > 0 else (ox + 0.14)
+        if abs(lim) < abs(s):
+            print('  [RETRACE] placed cube in sweep -> leg %.2f clamped to %.2f' % (s, lim))
+        return lim if abs(lim) >= 0.01 else 0.0
+
     def retrace_home():
-        # unwind every outbound leg in reverse order, then correct any residual
+        # unwind outbound legs in reverse order, then correct any residual.
+        # coalesce adjacent same-axis legs first: four alternating strafes replayed
+        # one by one looked like nervous left-right shuffling (user, 07-11)
         nonlocal fetch_off, fetch_lat
+        packed = []
+        for ax, mv in legs:
+            if packed and packed[-1][0] == ax:
+                packed[-1][1] += mv
+            else:
+                packed.append([ax, mv])
+        legs.clear()
+        legs.extend((ax, mv) for ax, mv in packed if abs(mv) >= 0.01)
         while legs:
             ax, mv = legs.pop()
-            rem = -mv
+            rem = placed_in_sweep(ax, -mv)
             for _ in range(2):
                 if abs(rem) < 0.01:
                     break
@@ -828,12 +912,12 @@ def main():
                     fetch_lat += got
                 else:
                     fetch_off += got
-        rem = -fetch_off                         # residual after truncated unwinds
+        rem = placed_in_sweep('x', -fetch_off)   # residual after truncated unwinds
         for _ in range(2):
             if abs(rem) < 0.01:
                 break
             got = node.drive(rem); rem -= got; fetch_off += got
-        rem = -fetch_lat
+        rem = placed_in_sweep('y', -fetch_lat)
         for _ in range(2):
             if abs(rem) < 0.01:
                 break
@@ -845,7 +929,7 @@ def main():
         for pp, dd in cands[1:]:
             if pp[0] < tpos[0] - 0.04 and abs(pp[1]) < 0.14:
                 return False
-        for px, py, _pz in placed_pts:
+        for px, py, _pz in placed_pts + floor_drops:
             # placed cubes are excluded as TARGETS but still exist as OBSTACLES --
             # excluding them from candidates blinded this check and a fetch drive
             # crushed one (07-11). Convert start-frame memory to the current frame.
@@ -861,7 +945,7 @@ def main():
         for pp, dd in cands[1:]:
             if pp[0] < 0.42 and lo < pp[1] < hi:
                 return False
-        for px, py, _pz in placed_pts:
+        for px, py, _pz in placed_pts + floor_drops:
             ox, oy = px - fetch_off, py - fetch_lat
             if 0.05 < ox < 0.42 and lo < oy < hi:
                 return False
@@ -943,6 +1027,12 @@ def main():
                     drives += 1; fetch_off += mv; blacklist.clear()
                     log_stat(orig, 'DRIVE_FETCH', 'x=%.2f' % pos0[0])
                     node.home(); continue
+            if st == 'OUT_OF_REACH' and (not AUTO_DRIVE or drives >= MAX_DRIVES):
+                # can never reach it this run (no drive budget left): park it in the
+                # PERMANENT list -- the pixel blacklist is cleared after every place/
+                # drive, so these came back and burned the whole attempt cap (07-11)
+                hard_black.append((pos0[0] + fetch_off, pos0[1] + fetch_lat))
+                print('  [PARK] %s unreachable, no drive budget -> parked for this run' % orig['id'])
             blacklist.append((orig['u'], orig['v'])); consec += 1
             log.append((orig['id'], st, msg)); log_stat(orig, st, msg); node.home(); continue
         if os.environ.get('JR_CARRY', '0') == '1':
@@ -960,12 +1050,12 @@ def main():
             retrace_home()                      # exact LIFO retrace of the outbound legs
             node.settle_after_drive()
             fetch_off = 0.0; fetch_lat = 0.0; blacklist.clear()
-        ppos = node.place_on_paper()
+        ppos, on_zone = node.place_on_paper()
         node.home()
         still = node.spot_occupied(orig['u'], orig['v'], orig['label'])   # empty-gripper recheck (home view)
         if not still:
             grabbed += 1; consec = 0; log.append((orig['id'], 'SUCCESS', msg))
-            placed_pts.append(ppos)
+            (placed_pts if on_zone else floor_drops).append(ppos)
             log_stat(orig, 'SUCCESS', msg)
             print('  -> SUCCESS (pickup spot now empty)')
         else:
