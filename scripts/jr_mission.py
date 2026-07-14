@@ -161,8 +161,13 @@ def main():
             print('[MISSION] cube in gripper -> delivering')
             # arm is already at OBSERVE holding the cube (grasp ends there)
             if delivery and node.goto(*delivery):
-                node.arm(FLOOR, dur=2.5)            # known-safe low pose
-                node.arm(((10, 200),), dur=1.0)     # release
+                # vision takes over for the last half-metre: pan-scan for the drop
+                # zone (dark mat + AprilTag) and place ON it -- nav only parks us
+                # nearby (AMCL+goal tolerance is +-20cm, blind release scatters)
+                r = subprocess.call(['python3', GRASP, 'place'])
+                if r != 0:                          # zone place failed: safe low release
+                    node.arm(FLOOR, dur=2.5)
+                    node.arm(((10, 200),), dur=1.0)
                 node.arm(OBSERVE, gripper=200)
                 print('[MISSION] delivered.')
             else:

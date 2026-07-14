@@ -106,6 +106,8 @@ class GraspAll(Node):
         self.fk.wait_for_service(timeout_sec=5.0)
         self.place_n = 0   # placements so far -> cycles fallback drop offsets
         self.zone_seen = False   # drop zone detected at least once this run
+        self.zone_hull = None    # START-frame metric hull of the mapped drop zone (mm ints)
+        self.zone_z = 0.0        # zone floor height (arm frame)
         # paper contours CACHED from the first (empty-paper) sighting per camera pose:
         # once cubes cover the paper its white blob shrinks below the detection floor,
         # live detection returns None, and on-paper exclusion would silently die --
@@ -659,8 +661,76 @@ class GraspAll(Node):
                     best = (score, cu, cv_)
         return (best[1], best[2]) if best else None
 
-    def place_on_paper(self):
+    def scan_zone(self, off=(0.0, 0.0)):
+        # PAN-MOSAIC zone mapping ("扫视获取放置区全貌"): stop-and-stare at 5 base
+        # headings, backproject every zone contour sighting onto the floor in ARM
+        # coordinates (live FK per view), union into ONE start-frame metric hull.
+        # Pixel contours die the moment the robot moves; metric ones survive drives
+        # and show the FULL zone, not just the corner one view happens to expose.
+        pts, zs = [], []
+        for s1 in (500, 660, 820, 340, 180):
+            self.move(0.8, ((1, s1),) + OBSERVE[1:])   # gripper untouched (carry-safe)
+            time.sleep(0.3)                            # stop-and-stare: no mid-pan frames
+            self.fresh(); self.fresh()
+            c = self._zone_detect()
+            if c is None:
+                continue
+            self.zone_seen = True
+            ep = self.get_endpoint()
+            for p in c[::6]:
+                fp = self.floor_point_cam(int(p[0][0]), int(p[0][1]))
+                if fp is None:
+                    continue
+                a = self.cam_to_arm(fp, ep)
+                if 0.05 < a[0] < 1.2 and abs(a[1]) < 0.8:
+                    pts.append((float(a[0]) + off[0], float(a[1]) + off[1]))
+                    zs.append(float(a[2]))
+        self.move(0.8, ((1, 500),) + OBSERVE[1:])
+        if len(pts) >= 8:
+            self.zone_hull = cv2.convexHull(
+                (np.array(pts, dtype=np.float32) * 1000).astype(np.int32))
+            self.zone_z = float(np.median(zs))
+            print('  [ZONE] mapped: %d pts, area %.2fm^2, floor z=%.3f' %
+                  (len(pts), cv2.contourArea(self.zone_hull) / 1e6, self.zone_z))
+            return True
+        print('  [ZONE] pan scan found no zone (%d pts)' % len(pts))
+        return False
+
+    def zone_cell(self, off=(0.0, 0.0), placed=()):
+        # first free ~9cm METRIC cell inside the mapped zone hull, nearest-reachable
+        # first. Metric cells spread drops across the real zone (no pixel-corner
+        # crowding) and the start-frame hull + off compensation survives drives.
+        if self.zone_hull is None:
+            return None
+        h = self.zone_hull.reshape(-1, 2).astype(np.float32) / 1000.0
+        cands = []
+        for gx in np.arange(h[:, 0].min() + 0.05, h[:, 0].max(), 0.09):
+            for gy in np.arange(h[:, 1].min() + 0.05, h[:, 1].max(), 0.09):
+                if cv2.pointPolygonTest(self.zone_hull, (float(gx * 1000), float(gy * 1000)), True) < 30:
+                    continue                       # >=3cm inside the hull
+                if any(abs(gx - pp[0]) < 0.055 and abs(gy - pp[1]) < 0.055 for pp in placed):
+                    continue                       # occupied (start frame both sides)
+                cx_, cy_ = gx - off[0], gy - off[1]  # current frame
+                if not (0.12 < cx_ < 0.36 and abs(cy_) < 0.34):
+                    continue                       # outside the arm envelope from HERE
+                cands.append((cx_, cy_))
+        if not cands:
+            return None
+        cands.sort(key=lambda c: c[0] * c[0] + 0.5 * c[1] * c[1])
+        return cands[0]
+
+    def place_on_paper(self, off=(0.0, 0.0), placed=()):
+        # metric zone-map path first: full-extent spread cells, displacement-proof
         self.fresh()
+        if self.zone_hull is None:
+            self.scan_zone(off)
+        if self.zone_hull is not None:
+            cell = self.zone_cell(off, placed)
+            if cell is not None:
+                pos = [float(cell[0]), float(cell[1]), self.zone_z + 0.05]
+                print('  [PLACE] metric zone cell -> %s' % np.round(pos, 3).tolist())
+                return self._lower_and_release(pos, True)
+        # legacy pixel path (zone map unavailable): live/cached contour + fallbacks
         pc_live = self.paper_contour()
         if pc_live is not None:
             self.pc_obs = pc_live      # live-first (tracks a nudged paper), cache as fallback
@@ -710,6 +780,9 @@ class GraspAll(Node):
             off = (0.0, 0.05, -0.05, 0.09, -0.09)[self.place_n % 5]
             pos = [0.22, off, 0.07]
             print('  [PLACE] fallback FLOOR spot y=%+.2f (paper never seen!)' % off)
+        return self._lower_and_release(pos, on_zone)
+
+    def _lower_and_release(self, pos, on_zone):
         lp, _ = self.solve_ik_multi([pos[0], pos[1], pos[2] + 0.07])
         if lp:
             self.move(1.2, ((1, lp[0]), (2, lp[1]), (3, lp[2]), (4, lp[3]), (5, lp[4])))
@@ -782,6 +855,20 @@ def main():
             print('!! BOARD DEAD, not driving'); node.destroy_node(); rclpy.shutdown(); return
         moved = node.drive(dist, axis=axis)
         print('[DRIVETEST] requested %+.2f on %s, moved %+.3f' % (dist, axis, moved))
+        node.destroy_node(); rclpy.shutdown(); return
+
+    if mode == 'place':
+        # mission delivery (jr_mission): the cube is ALREADY in the gripper (a JR_CARRY
+        # run grabbed it, nav drove us here). Find the zone HERE by pan-mosaic and
+        # place -- the gripper is never opened before the placement motion.
+        if not node.board_alive():      # tilts joint2 only; gripper untouched
+            print('!! BOARD DEAD, cannot place'); node.destroy_node(); rclpy.shutdown(); return
+        node.move(1.5, ((1, 500),) + OBSERVE[1:])   # observe WITHOUT touching servo 10
+        node.fresh()
+        node.scan_zone()
+        drop, on_zone = node.place_on_paper()
+        print('[PLACE-MODE] released at %s (on_zone=%s)' % (np.round(drop, 3).tolist(), on_zone))
+        node.move(1.2, ((1, 500),) + OBSERVE[1:])
         node.destroy_node(); rclpy.shutdown(); return
 
     if mode == 'survey':
@@ -1050,12 +1137,13 @@ def main():
             retrace_home()                      # exact LIFO retrace of the outbound legs
             node.settle_after_drive()
             fetch_off = 0.0; fetch_lat = 0.0; blacklist.clear()
-        ppos, on_zone = node.place_on_paper()
+        ppos, on_zone = node.place_on_paper((fetch_off, fetch_lat), placed_pts)
         node.home()
         still = node.spot_occupied(orig['u'], orig['v'], orig['label'])   # empty-gripper recheck (home view)
         if not still:
             grabbed += 1; consec = 0; log.append((orig['id'], 'SUCCESS', msg))
-            (placed_pts if on_zone else floor_drops).append(ppos)
+            (placed_pts if on_zone else floor_drops).append(
+                (ppos[0] + fetch_off, ppos[1] + fetch_lat, ppos[2]))   # start frame
             log_stat(orig, 'SUCCESS', msg)
             print('  -> SUCCESS (pickup spot now empty)')
         else:
