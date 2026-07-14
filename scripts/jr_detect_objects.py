@@ -181,13 +181,19 @@ def detect(rgb, depth, K):
         cm = (lab == i).astype(np.uint8)
         cnts, _ = cv2.findContours(cm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         ang = 0.0
+        ang_long = 0.0   # long-axis direction, mod 180 -- NOT collapsed to +-45
+        elong = 1.0      # long/short side ratio (1.0 = square-ish)
         rect = None
         if cnts and len(cnts[0]) >= 5:
             rect = cv2.minAreaRect(cnts[0])
             (_, _), (rw, rh), a = rect
             if rw < rh:
                 a += 90.0
+            # +-45 collapse is fine for squares (90deg symmetric) but loses WHICH axis
+            # is long -- a pen grasped on the wrong 90deg branch closes along its body
             ang = ((a + 45.0) % 90.0) - 45.0
+            ang_long = ((a + 90.0) % 180.0) - 90.0
+            elong = max(rw, rh) / max(1.0, min(rw, rh))
         dep = float(np.median(z[(lab == i) & (z > 0)])) if np.any((lab == i) & (z > 0)) else 0.0
         # distance-scaled area gate: the same physical cube shrinks with 1/z^2 in pixels
         # (a 3cm cube at 0.7m is ~230px -- a fixed 250px gate made far cubes invisible
@@ -204,7 +210,8 @@ def detect(rgb, depth, K):
             width_m = max(0.0, min(rw2, rh2) - 4.0) * dep / fx
         insts.append({'label': color_label(rgb, cm), 'u': cu, 'v': cv_,
                       'box': (x, y, x + bw, y + bh), 'area': float(area),
-                      'angle': float(ang), 'rect': rect, 'depth': dep, 'width_m': width_m,
+                      'angle': float(ang), 'angle_long': float(ang_long),
+                      'elong': float(elong), 'rect': rect, 'depth': dep, 'width_m': width_m,
                       'cnt': (cnts[0] if cnts else None)})
     if YOLO_ON and insts:
         yolo_label(rgb, insts)   # semantic names from YOLO; geometry stays depth-seg's

@@ -225,7 +225,7 @@ class GraspAll(Node):
         # the wrist mis-rotate); raw image angles empirically nailed +-40deg cubes (68%).
         mode = os.environ.get('JR_YAW_MODE', 'image')
         ep = self.get_endpoint()
-        angs = []
+        angs, longs, elongs = [], [], []
         for _ in range(n):
             self.fresh()
             best, bd = None, float(rad * rad)
@@ -238,6 +238,19 @@ class GraspAll(Node):
             a = self.floor_angle_arm(best, ep) if mode == 'floor' else best['angle']
             if a is not None:
                 angs.append(a)
+                longs.append(best.get('angle_long', a))
+                elongs.append(best.get('elong', 1.0))
+        # ELONGATED objects (pen, toothbrush): the +-45-collapsed cube angle is 90deg-
+        # ambiguous -- invisible on squares, but the gripper closed ALONG a pen's body
+        # (user, 07-11). Grip PERPENDICULAR to the long axis (mod-180 circular mean).
+        if elongs and sorted(elongs)[len(elongs) // 2] > 1.6:
+            s = sum(math.sin(math.radians(2 * a)) for a in longs)
+            c = sum(math.cos(math.radians(2 * a)) for a in longs)
+            long_mean = math.degrees(math.atan2(s, c)) / 2.0
+            grip = (long_mean % 180.0) - 90.0      # perpendicular, wrapped to (-90, 90]
+            print('  [YAW] elongated (ratio %.1f): long axis %+.0f -> grip %+.0f' %
+                  (sorted(elongs)[len(elongs) // 2], long_mean, grip))
+            return grip, len(longs)
         mean = self.circ_mean_angle(angs)
         if mode == 'floor':
             gamma = (float(base_pulse) - 500.0) / 4.17    # base yaw the arm will take, deg
@@ -303,7 +316,7 @@ class GraspAll(Node):
         z = np.asarray(self.depth).astype(np.float32) / 1000.0
         return det.fit_floor(z, self.K[0], self.K[4], self.K[2], self.K[5])
 
-    def footprint_cam(self, box):
+    def footprint_cam(self, box, inst=None):
         fl = self.fit_floor(box)
         if fl is None:
             return None
@@ -317,7 +330,13 @@ class GraspAll(Node):
         view = foot / np.linalg.norm(foot)
         horiz = view - (view @ n) * n; hn = np.linalg.norm(horiz)
         if hn > 1e-6:
-            foot = foot + (0.4 * (x2 - x1) * foot[2] / fx) * (horiz / hn)
+            push = 0.4 * (x2 - x1) * foot[2] / fx   # ~0.4 x body width (cube-tuned)
+            if inst is not None and inst.get('elong', 1.0) > 1.6 and inst.get('width_m', 0) > 0:
+                # thin diagonal body: its BOX width is the diagonal span (a pen's box is
+                # ~10cm -> 4cm push, landing the grasp on a fingertip); push by the
+                # body's own radius instead
+                push = 0.5 * inst['width_m']
+            foot = foot + push * (horiz / hn)
         return foot
 
     def get_endpoint(self):
@@ -354,7 +373,7 @@ class GraspAll(Node):
         ep = self.get_endpoint()
         fx, fy, cx, cy = self.K[0], self.K[4], self.K[2], self.K[5]
         top = self.cam_to_arm(ray(u, v, dist, fx, fy, cx, cy)[:3], ep)
-        foot = self.footprint_cam(box)
+        foot = self.footprint_cam(box, inst)
         if foot is None:
             return [float(top[0]) + FWD, float(top[1]) - Y_OFFSET, float(top[2])], 0.0
         base = self.cam_to_arm(foot, ep)
@@ -364,10 +383,19 @@ class GraspAll(Node):
             # (partial view / merged blob) -> reject rather than grasp at a bad point
             print('  reject %s: implausible height %.3fm -> bad localization' % (inst['id'], h))
             return None, 0.0
-        z = float(base[2]) + h * GRASP_FRAC + float(os.environ.get('JR_Z_TRIM', '0'))
-        # JR_Z_TRIM: signed metres, on-robot calibration knob for flat objects (a lying
-        # pen registers h~0.006 -> z is floor+2mm; trim while watching one attempt)
-        pos = [float(base[0]) + FWD, float(base[1]) - Y_OFFSET, z]
+        trim = float(os.environ.get('JR_Z_TRIM', '0'))
+        if h < 0.015:
+            # near-floor thin regime: the fully-extended arm sags a few mm, which cube
+            # grasps absorb but a 1cm pen does not (calibrated on-robot 07-11: -0.010)
+            trim += float(os.environ.get('JR_Z_TRIM_THIN', '-0.010'))
+        z = float(base[2]) + h * GRASP_FRAC + trim
+        if inst.get('elong', 1.0) > 1.6:
+            # diagonal thin body: the box-bottom ray lands on an EMPTY box corner (the
+            # body lies along the box DIAGONAL) -- XY straight from the centroid depth
+            # point (valid on a matte 1cm body, error ~mm); footprint keeps only floor z
+            pos = [float(top[0]) + FWD, float(top[1]) - Y_OFFSET, z]
+        else:
+            pos = [float(base[0]) + FWD, float(base[1]) - Y_OFFSET, z]
         if pos[0] < 0.08:
             # behind/under the robot = garbage from an extreme rotated view
             print('  reject %s: insane x=%.2f' % (inst['id'], pos[0]))
@@ -514,11 +542,15 @@ class GraspAll(Node):
         g_open = OPEN_WIDE if inst.get('width_m', 0.0) > WIDE_W else GRIPPER_OPEN
         print('  IK pitch=%.0f stable_angle=%+.0f(n=%d raw=%+.0f) servo5=%d open=%d' %
               (pit, sa, ns, inst['angle'], s5, g_open))
+        # thin bodies (a ~1cm pen): pulse 600 is where fingers merely TOUCH a cube-sized
+        # object; on 1cm there is no squeeze left and the body slips out on lift (07-11)
+        g_close = int(os.environ.get('JR_CLOSE_THIN', '660')) \
+            if 0 < inst.get('width_m', 0.0) < 0.015 else GRIPPER_CLOSE
         self.move(0.6, ((10, g_open),))
         self.move(1.0, ((1, p[0]),))
         self.move(1.5, ((1, p[0]), (2, p[1]), (3, p[2]), (4, p[3]), (5, p[4])))
         time.sleep(0.4)
-        self.move(1.0, ((1, p[0]), (2, p[1]), (3, p[2]), (4, p[3]), (5, p[4]), (10, GRIPPER_CLOSE)))
+        self.move(1.0, ((1, p[0]), (2, p[1]), (3, p[2]), (4, p[3]), (5, p[4]), (10, g_close)))
         time.sleep(0.4)
         # lift (keep yaw). NO verify here -- the main loop verifies AFTER placing, by
         # re-checking the pickup spot with an empty gripper (robust).
@@ -528,7 +560,7 @@ class GraspAll(Node):
             self.move(1.2, ((1, lp[0]), (2, lp[1]), (3, lp[2]), (4, lp[3]), (5, lp[4])))
         # go to OBSERVE (gripper closed) so place_on_paper sees the paper from the known
         # view -- straight from the lift pose the camera may not have the paper in frame.
-        self.move(1.2, OBSERVE + ((10, GRIPPER_CLOSE),))
+        self.move(1.2, OBSERVE + ((10, g_close),))
         return ('LIFTED', 's5=%d' % s5)
 
     def spot_occupied(self, u, v, label=None, rad=35):
