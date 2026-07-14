@@ -113,6 +113,7 @@ class GraspAll(Node):
         self.pc_floor = None    # FLOOR-pose paper contour (pickable/on-paper tests)
         self.pc_obs = None      # OBSERVE-pose paper contour (drop-cell selection)
         self.n_bottom = 0       # bottom-edge rejects in the last pickable() scan (M6: reverse to see them)
+        self.survey_chased = []  # arm-frame survey targets already driven to (one chase each)
 
     def _rgb(self, m): self.rgb = self.bridge.imgmsg_to_cv2(m, 'bgr8')
     def _d(self, m): self.depth = self.bridge.imgmsg_to_cv2(m, '16UC1')
@@ -478,7 +479,9 @@ class GraspAll(Node):
         print('  [DRIVE %s] moved %+.3fm (target %+.3f)' % (axis, moved if dist > 0 else -moved, dist))
         return moved if dist > 0 else -moved
 
-    def survey_far(self, placed_pts):
+    def survey_far(self, placed_pts, off=(0.0, 0.0)):
+        # off = (fetch_off, fetch_lat): current displacement from run start, so chased
+        # targets can be remembered in the START frame (arm frame moves with the robot)
         # "look up and scan": the FLOOR pose only sees ~0.15-0.45m; from OBSERVE the
         # camera sees much farther. Return (x, y) of the nearest far floor object
         # worth driving to, or None. Called when the floor view has nothing pickable.
@@ -506,9 +509,15 @@ class GraspAll(Node):
                 continue    # near ones are the floor view's job; too far/lateral = skip
             if any(abs(x - px) < 0.08 and abs(y - py) < 0.08 for px, py, _pz in placed_pts):
                 continue    # something we placed
+            if any(abs(x + off[0] - qx) < 0.08 and abs(y + off[1] - qy) < 0.08
+                   for qx, qy in self.survey_chased):
+                continue    # ONE chase per target: re-chasing a skip (too wide/unreachable)
+                            # looped 3x at a merged-cube cluster and wandered 1.1m (07-11)
             print('  [SURVEY] far object %s at (%.2f, %+.2f)' % (d['id'], x, y))
             if best is None or x < best[0]:
                 best = (x, y)
+        if best is not None:
+            self.survey_chased.append((best[0] + off[0], best[1] + off[1]))
         return best
 
     def settle_after_drive(self):
@@ -612,6 +621,20 @@ class GraspAll(Node):
         if pc_live is not None:
             self.pc_obs = pc_live      # live-first (tracks a nudged paper), cache as fallback
         pc = pc_live if pc_live is not None else self.pc_obs
+        if pc is None:
+            # PAN-SEARCH: the paper may sit outside the straight view (user: "让机器人
+            # 自己扫视"). Sweep the base and look; pixel->arm uses live FK, so a panned
+            # detection converts exactly (same principle as recenter_if_edge). The
+            # panned contour is used LIVE only -- never cached into the straight view.
+            for s1 in (660, 820, 340, 180):
+                self.move(1.0, ((1, s1),) + OBSERVE[1:])
+                self.fresh()
+                pc = self.paper_contour()
+                if pc is not None:
+                    print('  [PLACE] paper found by pan (servo1=%d)' % s1)
+                    break
+            if pc is None:
+                self.move(1.0, OBSERVE)   # sweep failed: face forward again
         pos = None
         if pc is not None:
             cell = self.pick_drop_cell(pc)
@@ -695,7 +718,10 @@ def main():
     node = GraspAll()
     if node.wait_bridge() < 1:
         print('servo bridge not connected'); return
-    if not node.fresh():
+    if not node.fresh(t=15.0):
+        # generous STARTUP wait only: a fresh process can take several seconds to
+        # DDS-discover the camera publishers (worse after many short-lived nodes);
+        # the camera itself being down still fails, just slower
         print('no camera'); return
 
     if mode == 'drivetest':
@@ -763,10 +789,12 @@ def main():
             pos, h = node.grasp_pos(d)
             if pos is None:
                 continue                                   # no valid depth / bad localization
-            if (abs(fetch_off) < 0.02 and abs(fetch_lat) < 0.02
-                    and any(abs(pos[0] - px) < 0.06 and abs(pos[1] - py) < 0.06
-                            for px, py, _pz in placed_pts)):
-                continue                                   # a cube WE placed (arm-frame memory, survives drives/paper-loss)
+            if any(abs(pos[0] + fetch_off - px) < 0.06 and abs(pos[1] + fetch_lat - py) < 0.06
+                   for px, py, _pz in placed_pts):
+                # a cube WE placed -- compare in the START frame (displacement-
+                # compensated; the old at-start-only gate let a displaced robot
+                # re-pick its own placements and re-place them elsewhere, 07-11)
+                continue
             out.append((pos, d))                           # reachability decided by IK in grasp()
         out.sort(key=lambda t: t[0][0])                    # nearest first
         return out
@@ -774,12 +802,55 @@ def main():
     drives = 0          # base moves used (fetch/strafe/reverse), capped
     fetch_off = 0.0     # net forward offset from fetch drives; undone before placing
     fetch_lat = 0.0     # net lateral (strafe) offset; undone before placing
+    legs = []           # (axis, actual_moved) stack of outbound legs
+
+    def drive_leg(dist, axis='x'):
+        # outbound drive that RECORDS the actual leg driven, so returns can retrace
+        # the exact path LIFO (reverse is lidar-blind; net-offset returns swept
+        # sideways through space never driven and hit a chair, 07-11)
+        moved = node.drive(dist, axis=axis)
+        if abs(moved) > 0.005:
+            legs.append((axis, moved))
+        return moved
+
+    def retrace_home():
+        # unwind every outbound leg in reverse order, then correct any residual
+        nonlocal fetch_off, fetch_lat
+        while legs:
+            ax, mv = legs.pop()
+            rem = -mv
+            for _ in range(2):
+                if abs(rem) < 0.01:
+                    break
+                got = node.drive(rem, axis=ax)
+                rem -= got
+                if ax == 'y':
+                    fetch_lat += got
+                else:
+                    fetch_off += got
+        rem = -fetch_off                         # residual after truncated unwinds
+        for _ in range(2):
+            if abs(rem) < 0.01:
+                break
+            got = node.drive(rem); rem -= got; fetch_off += got
+        rem = -fetch_lat
+        for _ in range(2):
+            if abs(rem) < 0.01:
+                break
+            got = node.drive(rem, axis='y'); rem -= got; fetch_lat += got
 
     def path_clear(cands, tpos):
         # nothing else standing in the strip we would drive through; the chassis is
         # ~0.2m wide plus wheels, so anything within |y|<0.14 is in harm's way
         for pp, dd in cands[1:]:
             if pp[0] < tpos[0] - 0.04 and abs(pp[1]) < 0.14:
+                return False
+        for px, py, _pz in placed_pts:
+            # placed cubes are excluded as TARGETS but still exist as OBSTACLES --
+            # excluding them from candidates blinded this check and a fetch drive
+            # crushed one (07-11). Convert start-frame memory to the current frame.
+            ox, oy = px - fetch_off, py - fetch_lat
+            if 0.05 < ox < tpos[0] - 0.04 and abs(oy) < 0.14:
                 return False
         return True
 
@@ -789,6 +860,10 @@ def main():
         lo, hi = (0.06, tpos[1] + 0.10) if tpos[1] > 0 else (tpos[1] - 0.10, -0.06)
         for pp, dd in cands[1:]:
             if pp[0] < 0.42 and lo < pp[1] < hi:
+                return False
+        for px, py, _pz in placed_pts:
+            ox, oy = px - fetch_off, py - fetch_lat
+            if 0.05 < ox < 0.42 and lo < oy < hi:
                 return False
         return True
 
@@ -813,22 +888,22 @@ def main():
         if (AUTO_DRIVE and node.n_bottom > 0 and drives < MAX_DRIVES
                 and fetch_off < 0.02 and abs(fetch_lat) < 0.02):
             print('[M6] %d target(s) too close (bottom-cut) -> reversing 0.13m first' % node.n_bottom)
-            node.drive(-0.13); node.settle_after_drive()
-            drives += 1; fetch_off -= 0.13; blacklist.clear()
+            mv = drive_leg(-0.13); node.settle_after_drive()
+            drives += 1; fetch_off += mv; blacklist.clear()
             continue
         if not cand:
             # nothing in the floor view: LOOK UP AND SCAN from OBSERVE for far objects
             far = None
             if AUTO_DRIVE and drives < MAX_DRIVES:
-                far = node.survey_far(placed_pts)
+                far = node.survey_far(placed_pts, (fetch_off, fetch_lat))
             if far is not None:
                 fx_, fy_ = far
                 print('[M6] SURVEY target at (%.2f, %+.2f) -> going' % (fx_, fy_))
                 if abs(fy_) >= 0.12 and drives + 1 < MAX_DRIVES:
-                    node.drive(fy_, axis='y'); drives += 1; fetch_lat += fy_
+                    mv = drive_leg(fy_, axis='y'); drives += 1; fetch_lat += mv
                 d = fx_ - 0.30
-                node.drive(d); node.settle_after_drive()
-                drives += 1; fetch_off += d; blacklist.clear()
+                mv = drive_leg(d); node.settle_after_drive()
+                drives += 1; fetch_off += mv; blacklist.clear()
                 node.home(); continue
             node.home()
             print('floor clear (nothing pickable left).'); break
@@ -855,8 +930,8 @@ def main():
                         and abs(fetch_lat + pos0[1]) <= 0.30):   # net lateral budget: no wandering
                     # M6 lateral fetch: mecanum-strafe to line the target up first
                     print('[M6] %s lateral (y=%+.2f) -> strafing to align' % (orig['id'], pos0[1]))
-                    node.drive(pos0[1], axis='y'); node.settle_after_drive()
-                    drives += 1; fetch_lat += pos0[1]; blacklist.clear()
+                    mv = drive_leg(pos0[1], axis='y'); node.settle_after_drive()
+                    drives += 1; fetch_lat += mv; blacklist.clear()
                     log_stat(orig, 'DRIVE_STRAFE', 'y=%.2f' % pos0[1])
                     node.home(); continue
                 if abs(pos0[1]) < 0.12 and path_clear(cand, pos0):
@@ -864,8 +939,8 @@ def main():
                     d = pos0[0] - 0.24
                     print('[M6] %s out of reach (x=%.2f) -> driving %+.2fm to fetch' %
                           (orig['id'], pos0[0], d))
-                    node.drive(d); node.settle_after_drive()
-                    drives += 1; fetch_off += d; blacklist.clear()
+                    mv = drive_leg(d); node.settle_after_drive()
+                    drives += 1; fetch_off += mv; blacklist.clear()
                     log_stat(orig, 'DRIVE_FETCH', 'x=%.2f' % pos0[0])
                     node.home(); continue
             blacklist.append((orig['u'], orig['v'])); consec += 1
@@ -880,17 +955,9 @@ def main():
             break
         if fetch_off != 0.0 or fetch_lat != 0.0:
             # carry the cube back to the start point so the paper is where we left it
-            print('[M6] returning (x %+.2f, y %+.2f) before placing' % (-fetch_off, -fetch_lat))
-            rem = -fetch_lat                    # legs can exceed drive()'s 0.45 clamp:
-            for _ in range(3):                  # loop until the full distance is undone
-                if abs(rem) < 0.01:
-                    break
-                rem -= node.drive(rem, axis='y')
-            rem = -fetch_off
-            for _ in range(3):
-                if abs(rem) < 0.01:
-                    break
-                rem -= node.drive(rem)
+            print('[M6] returning (x %+.2f, y %+.2f) before placing -> retracing legs' %
+                  (-fetch_off, -fetch_lat))
+            retrace_home()                      # exact LIFO retrace of the outbound legs
             node.settle_after_drive()
             fetch_off = 0.0; fetch_lat = 0.0; blacklist.clear()
         ppos = node.place_on_paper()
@@ -911,17 +978,8 @@ def main():
 
     if fetch_off != 0.0 or fetch_lat != 0.0:
         # never end a run displaced: drive back to the start point
-        print('[M6] run ending displaced -> returning to start (x %+.2f, y %+.2f)' % (-fetch_off, -fetch_lat))
-        rem = -fetch_lat
-        for _ in range(3):
-            if abs(rem) < 0.01:
-                break
-            rem -= node.drive(rem, axis='y')
-        rem = -fetch_off
-        for _ in range(3):
-            if abs(rem) < 0.01:
-                break
-            rem -= node.drive(rem)
+        print('[M6] run ending displaced -> retracing to start (x %+.2f, y %+.2f)' % (-fetch_off, -fetch_lat))
+        retrace_home()
 
     print('\n===== GRASP-ALL DONE =====  grabbed %d / %d attempts (blacklisted %d)' %
           (grabbed, attempts, len(blacklist)))

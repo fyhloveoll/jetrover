@@ -48,7 +48,7 @@ def parse_rule(text):
     elif any(w in t for w in ('拿来', '拿过来', '取来', '拿给', '递给', '带来')):
         action = 'fetch'
     elif any(w in t for w in ('抓', '拿', '取', '捡', '收', '清')):
-        action = 'clear' if any(w in t for w in ('都', '全部', '所有', '清')) else 'fetch'
+        action = 'clear' if any(w in t for w in ('都', '全', '所有', '清')) else 'fetch'
     else:
         return {'action': 'none', 'targets_en': [],
                 'reply': '没听懂。试试:"把红色方块都收好" / "把牙刷拿过来" / "看看地上有什么"'}
