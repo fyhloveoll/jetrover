@@ -683,10 +683,10 @@ class GraspAll(Node):
                  (OBSERVE, 820), (OBSERVE, 340), (FLOOR, 340), (OBSERVE, 180)]
         got_views = 0
         for pose, s1 in views:
-            if got_views >= 2 and len(pts) >= 80 and anchors:
+            if got_views >= 2 and len(pts) >= 50 and anchors:
                 break                                  # enough coverage already
-            self.move(0.8, ((1, s1),) + pose[1:])      # gripper untouched (carry-safe)
-            time.sleep(0.3)                            # stop-and-stare: no mid-pan frames
+            self.move(0.7, ((1, s1),) + pose[1:])      # gripper untouched (carry-safe)
+            time.sleep(0.2)                            # stop-and-stare: no mid-pan frames
             self.fresh(); self.fresh()
             tags = self._apriltags()
             c = self._zone_detect(strict=True)
@@ -754,24 +754,48 @@ class GraspAll(Node):
         cands = []
         for gx in np.arange(h[:, 0].min() + 0.05, h[:, 0].max(), 0.09):
             for gy in np.arange(h[:, 1].min() + 0.05, h[:, 1].max(), 0.09):
-                if cv2.pointPolygonTest(self.zone_hull, (float(gx * 1000), float(gy * 1000)), True) < 30:
+                d_in = cv2.pointPolygonTest(self.zone_hull, (float(gx * 1000), float(gy * 1000)), True)
+                if d_in < 30:
                     continue                       # >=3cm inside the hull
                 if any(abs(gx - pp[0]) < 0.055 and abs(gy - pp[1]) < 0.055 for pp in placed):
                     continue                       # occupied (start frame both sides)
                 cx_, cy_ = gx - off[0], gy - off[1]  # current frame
                 if not (0.12 < cx_ < 0.36 and abs(cy_) < 0.34):
                     continue                       # outside the arm envelope from HERE
-                cands.append((cx_, cy_))
+                cands.append((cx_, cy_, d_in))
         if not cands:
             return None
-        cands.sort(key=lambda c: c[0] * c[0] + 0.5 * c[1] * c[1])
-        return cands[0]
+        # DEEPEST-INSIDE first: nearest-first always chose edge cells and drops kept
+        # landing on the mat's rim, nearly sliding off (user, 07-16)
+        cands.sort(key=lambda c: -c[2])
+        return (cands[0][0], cands[0][1])
 
     def place_on_paper(self, off=(0.0, 0.0), placed=()):
         # metric zone-map path first: full-extent spread cells, displacement-proof
         self.fresh()
         if self.zone_hull is None:
             self.scan_zone(off)
+        if self.zone_hull is None:
+            # APPROACH-THEN-CONFIRM: tags are unreadable beyond ~0.55m, so a far mat
+            # can never be tag-confirmed from here (chicken-and-egg: the approach
+            # logic waited for a confirmed map). If the lenient detector sees a dark
+            # blob at a plausible mat distance, drive up and re-scan (07-16).
+            c = self._zone_detect()
+            if c is not None:
+                m = cv2.moments(c)
+                if m['m00'] > 0:
+                    fp = self.floor_point_cam(int(m['m10'] / m['m00']), int(m['m01'] / m['m00']))
+                    if fp is not None:
+                        a = self.cam_to_arm(fp, self.get_endpoint())
+                        if 0.42 < a[0] < 1.0 and abs(a[1]) < 0.45:
+                            print('  [PLACE] unconfirmed dark blob at (%.2f, %+.2f) -> approaching to confirm'
+                                  % (a[0], a[1]))
+                            mx = self.drive(min(0.45, float(a[0]) - 0.30))
+                            my = self.drive(max(-0.3, min(0.3, float(a[1]))), axis='y')                                 if abs(a[1]) > 0.18 else 0.0
+                            if mx or my:
+                                off = (off[0] + mx, off[1] + my)
+                                self.settle_after_drive()
+                                self.scan_zone(off)
         if self.zone_hull is not None:
             cell = self.zone_cell(off, placed)
             if cell is not None:
@@ -1220,6 +1244,19 @@ def main():
             blacklist.append((orig['u'], orig['v'])); consec += 1
             log.append((orig['id'], st, msg)); log_stat(orig, st, msg); node.home(); continue
         if os.environ.get('JR_CARRY', '0') == '1':
+            # CARRY-MODE VERIFY: the local mode re-checks the pickup spot, carry mode
+            # exited blind -- a missed grasp "delivered" an empty gripper on camera
+            # (07-16). Look back at the spot (gripper untouched), retry if still there.
+            node.move(1.2, FLOOR)
+            node.fresh(); node.fresh()
+            if node.spot_occupied(orig['u'], orig['v'], orig['label']):
+                print('  -> CARRY MISS (cube still on floor) -> retrying')
+                node.move(1.2, OBSERVE)
+                blacklist.append((orig['u'], orig['v'])); consec += 1
+                log.append((orig['id'], 'MISS', 'carry grasp missed'))
+                log_stat(orig, 'MISS', 'carry grasp missed')
+                continue
+            node.move(1.2, OBSERVE)
             # mission mode (jr_mission.py): keep the cube in the gripper and exit -- the
             # mission NAVIGATES to the delivery pose and releases there. Arm is already
             # at OBSERVE with the gripper closed; no local place, no return drive.

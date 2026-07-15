@@ -101,6 +101,7 @@ def run_grasp(carry, corridor=None):
     # one long-lived grasp process per batch (the zero-lockup discipline)
     env = dict(os.environ)
     env['JR_DUR'] = env.get('JR_DUR', '2.0')
+    env.setdefault('JR_ANGLE_FRAMES', '4')   # demo pace: 4-frame angle average
     if carry:
         env['JR_CARRY'] = '1'
     if corridor:
@@ -152,11 +153,13 @@ def main():
     delivery = cfg.get('delivery')
 
     total = 0
+    max_trips = int(os.environ.get('JR_MAX_TRIPS', '4'))
     for i, z in enumerate(zones):
-        print('== zone %d/%d ==' % (i + 1, len(zones)))
+      for trip in range(max_trips):
+        print('== zone %d/%d trip %d ==' % (i + 1, len(zones), trip + 1))
         node.arm(OBSERVE, gripper=200)              # travel pose, gripper open
         if not node.goto(*z):
-            print('!! skip zone %d (nav failed)' % (i + 1)); continue
+            print('!! skip zone %d (nav failed)' % (i + 1)); break
         corridor = None
         if carry and delivery:
             # delivery bearing in the robot's arm frame at this zone (clear-the-road
@@ -170,6 +173,9 @@ def main():
                 corridor = '%.3f,%.3f' % (ax / n, ay / n)
         grabbed, carried = run_grasp(carry, corridor)
         total += grabbed
+        if carry and not carried:
+            print('[MISSION] zone %d clear after %d trip(s)' % (i + 1, trip + 1))
+            break                                   # nothing left here -> next zone
         if carry and carried:
             print('[MISSION] cube in gripper -> delivering')
             # arm is already at OBSERVE holding the cube (grasp ends there)
@@ -185,7 +191,10 @@ def main():
                 print('[MISSION] delivered.')
             else:
                 print('!! delivery nav failed -- releasing here')
+                node.arm(FLOOR, dur=2.5)            # lower first: no mid-air drop
                 node.arm(((10, 200),), dur=1.0)
+                node.arm(OBSERVE, gripper=200)      # and tuck the arm back
+                break                               # nav is broken: stop this zone
     if not carry and delivery:
         node.arm(OBSERVE, gripper=200)
         node.goto(*delivery)

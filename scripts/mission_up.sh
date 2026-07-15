@@ -4,7 +4,7 @@
 # Kills leftovers by PID (never by self-matching pattern), verifies zero
 # survivors and single cmd_vel publisher, starts bringup+kinematics+nav,
 # waits on NODE STATE (not log guesswork). Prints READY or the exact blocker.
-set -u
+# (no set -u: ROS setup scripts read unset vars)
 source ~/jetrover_ws/jr_env.sh
 
 echo "== 1/4 sweep leftovers =="
