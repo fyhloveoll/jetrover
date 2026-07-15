@@ -45,6 +45,7 @@ STRAFE_SIGN = float(os.environ.get('JR_STRAFE_SIGN', '1'))
 SCAN_YAW = float(os.environ.get('JR_SCAN_YAW', '0'))        # lidar mounting yaw offset (rad); probe on-robot
 CLEAR_MARGIN = float(os.environ.get('JR_CLEAR_MARGIN', '0.28'))  # keep this much lidar clearance beyond the leg  # +1: Twist.linear.y>0 moves toward arm +y (left); flip if reversed on-robot
 MAX_W = float(os.environ.get('JR_MAX_WIDTH', '0.048'))   # gripper max opening (m); wider = ungrippable (a 5.3cm coke can does not fit)
+HARD_MAX_W = float(os.environ.get('JR_HARD_MAX_W', '0.09'))  # absolute ceiling at ANY distance (furniture filter)
 STATS = os.path.expanduser('~/jetrover_ws/grasp_stats.csv')   # per-attempt log, accumulates ACROSS runs/reboots
 ANGLE_FRAMES = int(os.environ.get('JR_ANGLE_FRAMES', '6'))   # frames to average the angle over
 EDGE_PX = float(os.environ.get('JR_EDGE_PX', '190'))      # |u-cx| beyond this = near frame edge
@@ -315,7 +316,7 @@ class GraspAll(Node):
             self.zone_seen = True
         return c
 
-    def _zone_detect(self):
+    def _zone_detect(self, strict=False):
         # DROP-ZONE contour. Default mode 'dark': a DARK mat seeded by AprilTag corner
         # cards -- glare on the glossy floor reads as white, and it hijacked the white-
         # paper detector ("absurd paper point", placements dumped on the floor, 07-11).
@@ -345,6 +346,11 @@ class GraspAll(Node):
                     tc = t.mean(axis=0)
                     if cv2.pointPolygonTest(c, (float(tc[0]), float(tc[1])), True) > -25:
                         return c
+            return None
+        if strict:
+            # mosaic mode: a view with NO tag must contribute NOTHING -- the largest-
+            # dark fallback fed far furniture/shadow into the pan mosaic and the hull
+            # swallowed 1.0m^2 of floor ("drop at own feet was inside the zone", 07-15)
             return None
         # no tag visible (occluded by cubes): largest dark blob as fallback
         return max(cnts, key=cv2.contourArea)
@@ -540,6 +546,8 @@ class GraspAll(Node):
         for d in self.detect():
             if targets and d['label'] not in targets:
                 continue      # never drive toward something we'd refuse to pick
+            if d.get('width_m', 0.0) > HARD_MAX_W:
+                continue      # furniture-sized: never chase it (the nightstand)
             if self.on_paper(pc, d['u'], d['v']):
                 continue
             if d['box'][3] >= self.rgb.shape[0] - 3:
@@ -672,7 +680,9 @@ class GraspAll(Node):
             self.move(0.8, ((1, s1),) + OBSERVE[1:])   # gripper untouched (carry-safe)
             time.sleep(0.3)                            # stop-and-stare: no mid-pan frames
             self.fresh(); self.fresh()
-            c = self._zone_detect()
+            c = self._zone_detect(strict=True)
+            print('  [ZONE] view s1=%d: tags=%d contour=%s' %
+                  (s1, len(self._apriltags()), 'Y' if c is not None else 'N'))
             if c is None:
                 continue
             self.zone_seen = True
@@ -687,11 +697,16 @@ class GraspAll(Node):
                     zs.append(float(a[2]))
         self.move(0.8, ((1, 500),) + OBSERVE[1:])
         if len(pts) >= 8:
-            self.zone_hull = cv2.convexHull(
-                (np.array(pts, dtype=np.float32) * 1000).astype(np.int32))
+            hull = cv2.convexHull((np.array(pts, dtype=np.float32) * 1000).astype(np.int32))
+            area = cv2.contourArea(hull) / 1e6
+            if area > 0.30:
+                # sanity cap: no mat is a third of a square metre -- garbage got in
+                print('  [ZONE] REJECT map: %.2fm^2 implausible (%d pts)' % (area, len(pts)))
+                return False
+            self.zone_hull = hull
             self.zone_z = float(np.median(zs))
             print('  [ZONE] mapped: %d pts, area %.2fm^2, floor z=%.3f' %
-                  (len(pts), cv2.contourArea(self.zone_hull) / 1e6, self.zone_z))
+                  (len(pts), area, self.zone_z))
             return True
         print('  [ZONE] pan scan found no zone (%d pts)' % len(pts))
         return False
@@ -918,6 +933,13 @@ def main():
                 continue                                   # on the place paper
             if any(abs(d['u'] - bu) < 45 and abs(d['v'] - bv) < 45 for bu, bv in blacklist):
                 continue                                   # known failed/unreachable
+            if d.get('width_m', 0.0) > HARD_MAX_W:
+                # ABSOLUTE ceiling, trusted at ANY distance: far-view inflation is
+                # ~30% max (43mm read 51mm), never 2x -- a 119mm "object" is furniture
+                # (the nightstand), don't even drive toward it (user, 07-15)
+                print('  skip %s: width %.0fmm = furniture-sized, never graspable' %
+                      (d['id'], d['width_m'] * 1000))
+                continue
             if MAX_W > 0 and d.get('width_m', 0.0) > MAX_W and d.get('depth', 1.0) < 0.42:
                 # width is only trusted NEAR (far blobs read wide); far candidates get
                 # fetched closer first and re-judged with an accurate measurement
