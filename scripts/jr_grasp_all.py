@@ -675,18 +675,42 @@ class GraspAll(Node):
         # coordinates (live FK per view), union into ONE start-frame metric hull.
         # Pixel contours die the moment the robot moves; metric ones survive drives
         # and show the FULL zone, not just the corner one view happens to expose.
-        pts, zs = [], []
-        for s1 in (500, 660, 820, 340, 180):
-            self.move(0.8, ((1, s1),) + OBSERVE[1:])   # gripper untouched (carry-safe)
+        pts, zs, anchors = [], [], []
+        # OBSERVE sees 0.38-1.2m; a mat at the robot's feet is BELOW that view, so the
+        # sweep also includes FLOOR-pose (0.15-0.45m) headings. Early-exit once the
+        # mosaic is rich enough -- no point staring at the far wall (user, 07-15).
+        views = [(OBSERVE, 500), (FLOOR, 500), (OBSERVE, 660), (FLOOR, 660),
+                 (OBSERVE, 820), (OBSERVE, 340), (FLOOR, 340), (OBSERVE, 180)]
+        got_views = 0
+        for pose, s1 in views:
+            if got_views >= 2 and len(pts) >= 80 and anchors:
+                break                                  # enough coverage already
+            self.move(0.8, ((1, s1),) + pose[1:])      # gripper untouched (carry-safe)
             time.sleep(0.3)                            # stop-and-stare: no mid-pan frames
             self.fresh(); self.fresh()
+            tags = self._apriltags()
             c = self._zone_detect(strict=True)
-            print('  [ZONE] view s1=%d: tags=%d contour=%s' %
-                  (s1, len(self._apriltags()), 'Y' if c is not None else 'N'))
+            print('  [ZONE] view %s s1=%d: tags=%d contour=%s' %
+                  ('OBS' if pose is OBSERVE else 'FLR', s1,
+                   len(tags), 'Y' if c is not None else 'N'))
+            if not tags and c is None:
+                continue
+            ep = self.get_endpoint()
+            # tag centres are ANCHORS: corner-refined and position-accurate; the mat
+            # geometry hangs off them, not off the noisy dark blob
+            for t in tags:
+                tc = t.mean(axis=0)
+                fp = self.floor_point_cam(int(tc[0]), int(tc[1]))
+                if fp is None:
+                    continue
+                a = self.cam_to_arm(fp, ep)
+                if 0.05 < a[0] < 1.2 and abs(a[1]) < 0.8:
+                    anchors.append((float(a[0]) + off[0], float(a[1]) + off[1]))
+                    zs.append(float(a[2]))
             if c is None:
                 continue
+            got_views += 1
             self.zone_seen = True
-            ep = self.get_endpoint()
             for p in c[::6]:
                 fp = self.floor_point_cam(int(p[0][0]), int(p[0][1]))
                 if fp is None:
@@ -696,11 +720,20 @@ class GraspAll(Node):
                     pts.append((float(a[0]) + off[0], float(a[1]) + off[1]))
                     zs.append(float(a[2]))
         self.move(0.8, ((1, 500),) + OBSERVE[1:])
+        if anchors:
+            # keep only contour points within 30cm of a tag anchor: oblique-view
+            # backprojection noise inflated a ~0.1m^2 mat to 0.23-0.34m^2 (07-15);
+            # anchors are ground truth, the dark blob only fills in the extent
+            pts = [p for p in pts
+                   if min((p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2 for a in anchors) < 0.09]
+            pts.extend(anchors)
         if len(pts) >= 8:
             hull = cv2.convexHull((np.array(pts, dtype=np.float32) * 1000).astype(np.int32))
             area = cv2.contourArea(hull) / 1e6
-            if area > 0.30:
-                # sanity cap: no mat is a third of a square metre -- garbage got in
+            if area > 0.45:
+                # sanity cap vs the 1.0m^2 floor-swallow class; oblique backprojection
+                # noise inflates a real ~0.1m^2 mat to ~0.35 (a true map was rejected
+                # at 0.34 on the first mission delivery, 07-15)
                 print('  [ZONE] REJECT map: %.2fm^2 implausible (%d pts)' % (area, len(pts)))
                 return False
             self.zone_hull = hull
@@ -881,7 +914,20 @@ def main():
         node.move(1.5, ((1, 500),) + OBSERVE[1:])   # observe WITHOUT touching servo 10
         node.fresh()
         node.scan_zone()
-        drop, on_zone = node.place_on_paper()
+        off = (0.0, 0.0)
+        if node.zone_hull is not None:
+            # MICRO-APPROACH: nav parks within tolerance of the standoff point; if the
+            # zone centre ended up beyond the arm (x=0.46 > 0.38 on the first mission
+            # delivery), drive the delta and re-scan from the closer, cleaner view
+            h = node.zone_hull.reshape(-1, 2).astype(np.float32) / 1000.0
+            zx, zy = float(h[:, 0].mean()), float(h[:, 1].mean())
+            mx = node.drive(max(-0.3, min(0.45, zx - 0.28))) if zx > 0.34 or zx < 0.20 else 0.0
+            my = node.drive(max(-0.3, min(0.3, zy)), axis='y') if abs(zy) > 0.18 else 0.0
+            if mx or my:
+                off = (mx, my)
+                node.settle_after_drive()
+                node.scan_zone(off)
+        drop, on_zone = node.place_on_paper(off)
         print('[PLACE-MODE] released at %s (on_zone=%s)' % (np.round(drop, 3).tolist(), on_zone))
         node.move(1.2, ((1, 500),) + OBSERVE[1:])
         node.destroy_node(); rclpy.shutdown(); return
@@ -963,7 +1009,21 @@ def main():
                     for fx, fy, _fz in floor_drops):
                 continue    # re-placing would just drop it again until the zone is seen
             out.append((pos, d))                           # reachability decided by IK in grasp()
-        out.sort(key=lambda t: t[0][0])                    # nearest first
+        cor = os.environ.get('JR_CORRIDOR', '')
+        if cor:
+            # CLEAR-THE-ROAD ordering (mission mode): cubes sitting in the corridor
+            # toward the delivery point get picked FIRST -- every carry trip then
+            # rolls through ground we already cleared (lidar cannot see 3cm cubes)
+            ux, uy = (float(v) for v in cor.split(','))
+            def key(t):
+                px, py = t[0][0], t[0][1]
+                along = px * ux + py * uy
+                cross = abs(px * uy - py * ux)
+                in_corridor = along > 0.05 and cross < 0.16
+                return (0 if in_corridor else 1, px)
+            out.sort(key=key)
+        else:
+            out.sort(key=lambda t: t[0][0])                # nearest first
         return out
 
     drives = 0          # base moves used (fetch/strafe/reverse), capped
@@ -1062,6 +1122,7 @@ def main():
 
     sem_targets = bool(os.environ.get('JR_TARGET', '').strip())
     flicker = 0
+    chase = None    # (start_x, start_y, seen_x) of the last fetch-drive target
     while rclpy.ok() and attempts < int(os.environ.get("JR_MAX_ATTEMPTS", "20")):
         cand = pickable()
         # open-vocab names near the conf threshold FLICKER frame to frame; with a
@@ -1118,6 +1179,19 @@ def main():
         except Exception as e:
             print('  grasp error: %s' % e); break
         if st != 'LIFTED':
+            if st == 'OUT_OF_REACH':
+                # CHASE-STALL guard: we drove at this target and it is NOT closer --
+                # a floor object must close in by ~the drive length; one that stays
+                # at the same range is a phantom (elevated object's footprint
+                # projection). It dragged the robot 2.6m across the room (07-15).
+                sfx, sfy = pos0[0] + fetch_off, pos0[1] + fetch_lat
+                if (chase is not None and abs(sfx - chase[0]) < 0.15
+                        and abs(sfy - chase[1]) < 0.15 and pos0[0] > chase[2] - 0.10):
+                    print('  [PARK] %s: chased but no closer -> phantom, parked' % orig['id'])
+                    hard_black.append((sfx, sfy))
+                    blacklist.append((orig['u'], orig['v'])); consec += 1
+                    log_stat(orig, 'CHASE_STALL', 'x stuck %.2f' % pos0[0])
+                    node.home(); continue
             if st == 'OUT_OF_REACH' and AUTO_DRIVE and drives < MAX_DRIVES:
                 if (abs(pos0[1]) >= 0.12 and strafe_clear(cand, pos0)
                         and abs(fetch_lat + pos0[1]) <= 0.30):   # net lateral budget: no wandering
@@ -1134,6 +1208,7 @@ def main():
                           (orig['id'], pos0[0], d))
                     mv = drive_leg(d); node.settle_after_drive()
                     drives += 1; fetch_off += mv; blacklist.clear()
+                    chase = (pos0[0] + fetch_off - mv, pos0[1] + fetch_lat, pos0[0])
                     log_stat(orig, 'DRIVE_FETCH', 'x=%.2f' % pos0[0])
                     node.home(); continue
             if st == 'OUT_OF_REACH' and (not AUTO_DRIVE or drives >= MAX_DRIVES):

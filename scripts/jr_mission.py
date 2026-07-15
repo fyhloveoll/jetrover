@@ -97,12 +97,14 @@ class Mission(Node):
         return ok
 
 
-def run_grasp(carry):
+def run_grasp(carry, corridor=None):
     # one long-lived grasp process per batch (the zero-lockup discipline)
     env = dict(os.environ)
     env['JR_DUR'] = env.get('JR_DUR', '2.0')
     if carry:
         env['JR_CARRY'] = '1'
+    if corridor:
+        env['JR_CORRIDOR'] = corridor   # arm-frame unit vector toward the delivery
     print('[GRASP] starting %s (carry=%s)' % (GRASP, carry))
     r = subprocess.run(['python3', GRASP, 'run'], env=env,
                        capture_output=True, text=True, timeout=700)
@@ -155,7 +157,18 @@ def main():
         node.arm(OBSERVE, gripper=200)              # travel pose, gripper open
         if not node.goto(*z):
             print('!! skip zone %d (nav failed)' % (i + 1)); continue
-        grabbed, carried = run_grasp(carry)
+        corridor = None
+        if carry and delivery:
+            # delivery bearing in the robot's arm frame at this zone (clear-the-road
+            # grasp ordering: the carry trips drive through cleared ground)
+            th = math.radians(z[2])
+            vx, vy = delivery[0] - z[0], delivery[1] - z[1]
+            ax = math.cos(th) * vx + math.sin(th) * vy
+            ay = -math.sin(th) * vx + math.cos(th) * vy
+            n = math.hypot(ax, ay)
+            if n > 0.2:
+                corridor = '%.3f,%.3f' % (ax / n, ay / n)
+        grabbed, carried = run_grasp(carry, corridor)
         total += grabbed
         if carry and carried:
             print('[MISSION] cube in gripper -> delivering')
