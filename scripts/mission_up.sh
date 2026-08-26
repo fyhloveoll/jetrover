@@ -41,6 +41,20 @@ for i in $(seq 1 24); do
 done
 echo "  camera_topics=$cam nav_action=$nav amcl_active=$amcl"
 
+echo "== 3.5/4 nav param patch (TEB holonomic; vendor yaml configures it differential) =="
+# TEB loads from the VENDOR controller yaml (hardcoded path in their launch); we do
+# not edit vendor files, so re-apply the mecanum-enabling overrides at runtime:
+# max_vel_y=0 + weight_nh=1000 forbade strafing -> end-of-goal shuffle oscillation
+# (P0 confirmed 2026-08-26); max_vel_theta matched to the smoother cap (planner
+# must not plan turns the executor will clip -- D6).
+ros2 param set /controller_server FollowPath.max_vel_y 0.15 >/dev/null 2>&1
+ros2 param set /controller_server FollowPath.weight_kinematics_nh 1.0 >/dev/null 2>&1
+ros2 param set /controller_server FollowPath.max_vel_theta 0.6 >/dev/null 2>&1
+ros2 param set /controller_server goal_checker.xy_goal_tolerance 0.12 >/dev/null 2>&1
+ros2 param set /velocity_smoother max_velocity "[0.15, 0.15, 0.6]" >/dev/null 2>&1
+ros2 param set /velocity_smoother min_velocity "[-0.15, -0.15, -0.6]" >/dev/null 2>&1
+echo "  TEB strafe unlocked + smoother vy unlocked + theta matched"
+
 echo "== 4/4 sanity =="
 pubs=$(ros2 topic info /controller/cmd_vel 2>/dev/null | grep "Publisher count" | grep -o "[0-9]*")
 echo "  cmd_vel publishers: ${pubs:-?} (must be 1)"

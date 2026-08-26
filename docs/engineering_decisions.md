@@ -88,3 +88,22 @@ controller yaml,patch 报 0 hits)。
 (`ros2 node list`),再单变量对比回程震荡。
 
 **教训:任何在控制闭环外修改指令的组件,都在对规划器说谎——哪怕它只是"限个速"。**
+
+### D6 真机验证附录(2026-08-26,美国公寓,运行时取证)
+
+四个运行时铁证把 P0 全案钉死:
+1. **活动控制器 = TEB**(RotationShimController 包裹 teb_local_planner)——Windows 侧
+   简报的 TEB 假设正确;Linux 侧此前按 M3 旧档案纠正为 DWB 是**错的**。教训:运行时
+   `ros2 param get` 击败任何档案记忆。
+2. **TEB 按差速车配置跑麦轮**:`max_vel_y=0.0` + `weight_kinematics_nh=1000` ——
+   横移被禁,侧向纠偏只能"前进-转-后退"倒腾 = 打转主根因(假设 B 实锤)。
+3. **velocity_smoother 一直在跑**(7 月"没生效"判断错误),且其 `max_velocity` 中
+   vy 上限=0.0(继承自 vendor)= 横移在第二道关再次归零。
+4. 帮凶:TEB `max_vel_theta=2.0` vs smoother 上限 0.6(栈内规划/执行互相说谎,与
+   D6 主论点同病);`goal_checker.xy_goal_tolerance=0.08`(比代码注释以为的 ±20cm
+   严得多)——不许横移却要求 8cm 侧向精度。
+
+**修复**(零 vendor 修改):自有 params 副本解锁 smoother vy;TEB 参数经 mission_up.sh
+启动后运行时覆写(vendor launch 硬编码其 controller yaml 路径,运行时 param set 是
+不碰 vendor 的唯一通道):max_vel_y=0.15、weight_nh=1.0、theta 对齐 0.6、容差 0.12。
+待美国公寓新图建成后跑同场景回归验证。
