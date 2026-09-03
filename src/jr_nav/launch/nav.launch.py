@@ -33,7 +33,7 @@ def generate_launch_description():
                  name='cmd_vel_relay', output='screen')
 
     return LaunchDescription([
-        DeclareLaunchArgument('map', default_value='/home/ubuntu/jetrover_ws/maps/map_02.yaml'),
+        DeclareLaunchArgument('map', default_value='/home/ubuntu/jetrover_ws/maps/apt_loop_20260903.yaml'),
         DeclareLaunchArgument('use_teb', default_value='true'),
         nav2,
         relay,

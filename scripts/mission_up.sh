@@ -13,7 +13,8 @@ for pat in "ros2 launch jr_bringup" "ros2 launch kinematics" "ros2 launch jr_nav
            "jr_grasp_all.py" "jr_mission.py" "mjpeg_stream.py"; do
     for p in $(pgrep -f "$pat" 2>/dev/null); do
         [ "$p" = "$$" ] && continue
-        kill -TERM "$p" 2>/dev/null && echo "  TERM $p ($pat)"
+        # setsid launches are process-group leaders: kill the GROUP so driver nodes die with the wrapper
+        kill -TERM -- "-$p" 2>/dev/null && echo "  TERM group $p ($pat)"
     done
 done
 sleep 4
@@ -29,7 +30,8 @@ setsid ros2 launch jr_bringup robot.launch.py enable_camera:=true >~/bringup.log
 sleep 14
 setsid ros2 launch kinematics kinematics_node.launch.py >~/kin.log 2>&1 </dev/null &
 sleep 6
-setsid ros2 launch jr_nav nav.launch.py >~/nav.log 2>&1 </dev/null &
+# map: the US apartment loop-closure map by default (JR_MAP overrides); map_02 was the old flat
+setsid ros2 launch jr_nav nav.launch.py map:="${JR_MAP:-/home/ubuntu/jetrover_ws/maps/apt_loop_20260903.yaml}" >~/nav.log 2>&1 </dev/null &
 
 echo "== 3/4 wait on node state (max 120s) =="
 for i in $(seq 1 24); do
