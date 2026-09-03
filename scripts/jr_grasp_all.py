@@ -220,7 +220,7 @@ class GraspAll(Node):
             ang += 90.0
         return ((ang + 45.0) % 90.0) - 45.0
 
-    def stable_yaw(self, u, v, base_pulse, n=ANGLE_FRAMES, rad=40):
+    def stable_yaw(self, u, v, pos, n=ANGLE_FRAMES, rad=40):
         # multi-frame circular-mean of the floor-projected arm-frame angle, then subtract
         # the base yaw the grasp will use: the gripper's closing axis rotates with the
         # base (servo1), so the wrist offset must be RELATIVE to the approach bearing.
@@ -228,6 +228,10 @@ class GraspAll(Node):
         # default=image: the floor-projected mode's base-yaw (gamma) subtraction used a
         # wrong servo1 pulse->deg model and mangled otherwise-correct angles (user saw
         # the wrist mis-rotate); raw image angles empirically nailed +-40deg cubes (68%).
+        # 2026-09: gamma is now pure geometry -- the bearing of the target position in
+        # the arm frame, atan2(y, x) -- no servo1 pulse model involved. `pos` is the
+        # arm-frame grasp position (from grasp_pos). Validate with scripts/yaw_calib.py
+        # (paper-line rig) before switching the default to 'floor'.
         mode = os.environ.get('JR_YAW_MODE', 'image')
         ep = self.get_endpoint()
         angs, longs, elongs = [], [], []
@@ -258,8 +262,9 @@ class GraspAll(Node):
             return grip, len(longs)
         mean = self.circ_mean_angle(angs)
         if mode == 'floor':
-            gamma = (float(base_pulse) - 500.0) / 4.17    # base yaw the arm will take, deg
+            gamma = math.degrees(math.atan2(float(pos[1]), float(pos[0])))   # approach bearing, deg
             off = ((mean - gamma + 45.0) % 90.0) - 45.0
+            print('  [YAW] floor angle %+.1f - bearing %+.1f -> wrist offset %+.1f' % (mean, gamma, off))
         else:
             off = mean
         return off, len(angs)
@@ -597,7 +602,7 @@ class GraspAll(Node):
         # YAW ALIGN: turn the wrist (servo5) to the object's orientation so the fingers
         # close on OPPOSITE faces. Use a MULTI-FRAME stabilized angle (single-frame
         # minAreaRect jitters). (servo5 mapping needs JR_YAW_GAIN sign/gain calibration.)
-        sa, ns = self.stable_yaw(inst['u'], inst['v'], p[0])
+        sa, ns = self.stable_yaw(inst['u'], inst['v'], pos)
         s5 = int(max(0, min(1000, YAW_NEUTRAL + YAW_GAIN * sa)))
         p[4] = s5
         # wide objects (e.g. the 43mm cube in a ~48mm gripper) have only ~2.5mm entry
