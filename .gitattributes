@@ -1,0 +1,12 @@
+# Scripts and configs are deployed to the robot (Linux) -- always LF, never CRLF
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.xml   text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.rviz  text eol=lf
+*.pgm   binary
+*.posegraph binary
+*.data  binary
+*.png   binary
