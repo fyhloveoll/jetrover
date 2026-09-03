@@ -220,6 +220,77 @@ class GraspAll(Node):
             ang += 90.0
         return ((ang + 45.0) % 90.0) - 45.0
 
+    def edge_angle_arm(self, inst, ep):
+        # TOP-FACE ORIENTATION FROM RGB EDGES (2026-09-02 iPad-line rig): the depth
+        # blob's contour is too ragged on a ~45px cube -- minAreaRect on it (image or
+        # floor-projected) read 15deg cubes as 7-10 and 30deg as 18 (err up to 12deg,
+        # frame sd ~3). Canny edges inside the blob + HoughP segments, each back-
+        # projected onto the plane at the cube's TOP height and averaged with 4-fold
+        # (mod 90) symmetry, read 13.5 / 28.5 for 15 / 30 with frame sd 0.4deg.
+        # Segments >10deg from the consensus are dropped (vertical side edges).
+        cnt = inst.get('cnt')
+        fl = self.fit_floor(None)
+        if cnt is None or fl is None:
+            return None
+        n, dd = fl
+        n = np.asarray(n, np.float64)
+        fx, fy, cx, cy = self.K[0], self.K[4], self.K[2], self.K[5]
+        T = ep @ HAND2CAM
+        depth = np.asarray(self.depth)
+        z = depth.astype(np.float32) / 1000.0
+        mask = np.zeros(depth.shape, np.uint8)
+        cv2.drawContours(mask, [cnt], -1, 255, -1)
+        vs, us = np.nonzero(mask)
+        zz = z[vs, us]
+        ok = (zz > 0.05) & (zz < 2.0)
+        if ok.sum() < 20:
+            return None
+        P = np.stack([(us[ok] - cx) / fx * zz[ok], (vs[ok] - cy) / fy * zz[ok], zz[ok]], axis=1)
+        s = P @ n + dd
+        if np.median(s) < 0:            # make "above the floor" positive
+            n, dd, s = -n, -dd, -s
+        h_top = float(np.percentile(s, 95))
+        # RGB edges of the object, restricted to the (slightly dilated) blob
+        roi = cv2.dilate(mask, np.ones((7, 7), np.uint8))
+        edges = cv2.Canny(cv2.cvtColor(self.rgb, cv2.COLOR_BGR2GRAY), 60, 160)
+        edges[roi == 0] = 0
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 360, threshold=8, minLineLength=8, maxLineGap=3)
+        if lines is None:
+            return None
+
+        def on_top(uu, vv):             # pixel -> point on the top plane -> arm XY
+            dirb = np.array([(uu - cx) / fx, (vv - cy) / fy, 1.0])
+            den = n @ dirb
+            if abs(den) < 1e-6:
+                return None
+            c = dirb * (-(dd - h_top) / den)
+            a = T @ np.array([c[0] - 0.01, c[1], c[2], 1.0])
+            return a[0], a[1]
+
+        segs = []
+        for x0, y0, x1, y1 in lines[:, 0, :]:
+            p0, p1 = on_top(float(x0), float(y0)), on_top(float(x1), float(y1))
+            if p0 is None or p1 is None:
+                continue
+            segs.append((math.hypot(p1[0] - p0[0], p1[1] - p0[1]),
+                         math.degrees(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))))
+
+        def qmean(ss):
+            sn = sum(L * math.sin(math.radians(4 * a)) for L, a in ss)
+            cs = sum(L * math.cos(math.radians(4 * a)) for L, a in ss)
+            return None if (sn == 0.0 and cs == 0.0) else ((math.degrees(math.atan2(sn, cs)) / 4.0 + 45.0) % 90.0) - 45.0
+
+        m = qmean(segs)
+        for _ in range(2):              # robust: drop outliers, re-average
+            if m is None:
+                break
+            keep = [sg for sg in segs if abs((((sg[1] - m) + 45.0) % 90.0) - 45.0) <= 10.0]
+            if len(keep) < 2 or len(keep) == len(segs):
+                break
+            segs = keep
+            m = qmean(segs)
+        return m
+
     def stable_yaw(self, u, v, pos, n=ANGLE_FRAMES, rad=40):
         # multi-frame circular-mean of the floor-projected arm-frame angle, then subtract
         # the base yaw the grasp will use: the gripper's closing axis rotates with the
@@ -244,7 +315,12 @@ class GraspAll(Node):
                     bd, best = d, o
             if best is None:
                 continue
-            a = self.floor_angle_arm(best, ep) if mode == 'floor' else best['angle']
+            if mode == 'edge':
+                a = self.edge_angle_arm(best, ep)
+            elif mode == 'floor':
+                a = self.floor_angle_arm(best, ep)
+            else:
+                a = best['angle']
             if a is not None:
                 angs.append(a)
                 longs.append(best.get('angle_long', a))
@@ -261,10 +337,10 @@ class GraspAll(Node):
                   (sorted(elongs)[len(elongs) // 2], long_mean, grip))
             return grip, len(longs)
         mean = self.circ_mean_angle(angs)
-        if mode == 'floor':
+        if mode in ('floor', 'edge'):
             gamma = math.degrees(math.atan2(float(pos[1]), float(pos[0])))   # approach bearing, deg
             off = ((mean - gamma + 45.0) % 90.0) - 45.0
-            print('  [YAW] floor angle %+.1f - bearing %+.1f -> wrist offset %+.1f' % (mean, gamma, off))
+            print('  [YAW] %s angle %+.1f - bearing %+.1f -> wrist offset %+.1f' % (mode, mean, gamma, off))
         else:
             off = mean
         return off, len(angs)

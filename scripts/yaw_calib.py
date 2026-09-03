@@ -29,6 +29,7 @@ import math
 import os
 import time
 
+import cv2
 import numpy as np
 import rclpy
 
@@ -63,7 +64,29 @@ def main():
     ap.add_argument('--frames', type=int, default=6)
     ap.add_argument('--csv', default=os.path.expanduser('~/jetrover_ws/yaw_calib.csv'))
     ap.add_argument('--no-home', action='store_true', help='do not move the arm to FLOOR pose')
+    ap.add_argument('--watch', default='', help='remote-driven mode: poll this file for "<deg> [tag]" '
+                    'lines (or "peek" = report detections without logging, "q" = quit) instead of stdin')
+    ap.add_argument('--dump', default=os.path.expanduser('~/jetrover_ws/yaw_calib_frames'),
+                    help='save rgb/depth/K/FK per logged frame here for offline re-analysis ("" = off)')
     args = ap.parse_args()
+    if args.dump:
+        os.makedirs(args.dump, exist_ok=True)
+
+    def next_command():
+        """one command line from stdin, or from the watch file (deleted after reading)"""
+        if not args.watch:
+            try:
+                return input('true angle [tag] > ').strip()
+            except EOFError:
+                return 'q'
+        while True:
+            if os.path.exists(args.watch):
+                with open(args.watch) as fh:
+                    line = fh.read().strip()
+                os.remove(args.watch)
+                if line:
+                    return line
+            rclpy.spin_once(node, timeout_sec=0.2)
 
     rclpy.init()
     node = ga.GraspAll()
@@ -84,14 +107,36 @@ def main():
     sessions = []   # (true, tag, mean_img, mean_floor, n)
 
     print('\nplace the cube on a line, then type: <true_deg> [tag]   e.g. "30", "-15 left", "0 far"')
-    print('type "q" to finish.\n')
+    print('"peek" = list detections without logging; "q" = finish.\n', flush=True)
     while True:
-        try:
-            line = input('true angle [tag] > ').strip()
-        except EOFError:
-            break
+        line = next_command()
         if not line or line.lower() == 'q':
             break
+        if line.lower().startswith('pose'):
+            # "pose <servo1_pulse>": rotate the base (camera viewpoint) keeping the FLOOR
+            # observation pose otherwise -- used to check that the arm-frame angle is
+            # viewpoint-invariant (500 = straight ahead, ~4.17 pulse/deg)
+            try:
+                s1 = int(line.split()[1])
+            except (IndexError, ValueError):
+                print('usage: pose <servo1_pulse>', flush=True); continue
+            node.move(1.2, tuple((i, (s1 if i == 1 else p)) for i, p in ga.FLOOR))
+            time.sleep(0.8)
+            print('[pose] servo1=%d, arm settled\n' % s1, flush=True)
+            continue
+        if line.lower() == 'peek':
+            if node.fresh():
+                fl = node.fit_floor(None)
+                print('[peek] floor plane: %s' % (('n=%s d=%.3f' % (np.round(fl[0], 3).tolist(), fl[1])) if fl else 'NO FIT'))
+                ds = node.detect()
+                print('[peek] %d detections' % len(ds))
+                for o in ds:
+                    print('   %-8s px(%d,%d) area=%.0f depth=%.3f angle=%+.0f elong=%.2f' %
+                          (o['id'], o['u'], o['v'], o['area'], o.get('depth', 0.0), o['angle'], o.get('elong', 1.0)))
+            else:
+                print('[peek] no camera frames')
+            print('', flush=True)
+            continue
         parts = line.split()
         try:
             true = float(parts[0])
@@ -105,6 +150,12 @@ def main():
             if not node.fresh():
                 print('  frame %d: no data' % i); continue
             fl = node.fit_floor(None)
+            if args.dump:
+                stem = os.path.join(args.dump, '%d_%+03d_%s_%d' % (int(time.time()), int(true), tag or 'c', i))
+                np.save(stem + '_depth.npy', np.asarray(node.depth))
+                cv2.imwrite(stem + '_rgb.png', node.rgb)
+                np.save(stem + '_K.npy', np.asarray(node.K, dtype=np.float64))
+                np.save(stem + '_ep.npy', np.asarray(ep, dtype=np.float64))
             inst = pick_target(node.detect(), node.K)
             if inst is None:
                 print('  frame %d: nothing detected' % i); continue
