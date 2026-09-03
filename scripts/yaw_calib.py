@@ -128,6 +128,20 @@ def main():
             if node.fresh():
                 fl = node.fit_floor(None)
                 print('[peek] floor plane: %s' % (('n=%s d=%.3f' % (np.round(fl[0], 3).tolist(), fl[1])) if fl else 'NO FIT'))
+                if fl:
+                    # hand-eye sanity: the floor normal mapped into the arm frame must be
+                    # vertical. tilt != 0 => camera pitched/rolled vs HAND2CAM (2026-09-02:
+                    # 16.7 deg after the transatlantic move)
+                    nn = np.asarray(fl[0], np.float64); nn /= np.linalg.norm(nn)
+                    if nn[2] > 0:
+                        nn = -nn
+                    up = (node.get_endpoint() @ ga.HAND2CAM)[:3, :3] @ nn
+                    if up[2] < 0:
+                        up = -up
+                    tilt = math.degrees(math.acos(max(-1.0, min(1.0, up[2]))))
+                    print('[peek] hand-eye check: floor "up" in arm frame = %s  tilt %.2f deg '
+                          '(pitch %+.2f, roll %+.2f)' % (np.round(up, 3).tolist(), tilt,
+                                                        math.degrees(math.asin(-up[0])), math.degrees(math.asin(-up[1]))))
                 ds = node.detect()
                 print('[peek] %d detections' % len(ds))
                 for o in ds:

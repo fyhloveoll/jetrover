@@ -31,13 +31,23 @@ import jr_detect_objects as det     # object-agnostic detection layer (shared)
 
 DUR = float(os.environ.get('JR_DUR', '2.0'))
 PITCH = float(os.environ.get('JR_PITCH', '80'))
-FWD = float(os.environ.get('JR_FWD', '0.015'))   # forward nudge: 0.02 biased far-edge, 0.01 biased near-edge (batch2/3 A-B test) -> midpoint
-Y_OFFSET = float(os.environ.get('JR_Y_OFFSET', '0.022'))
+# Position nudges re-tuned 2026-09-02 after the hand-eye pitch fix (CAM_PITCH): 3 ruler
+# points at 20-32cm gave raw footprint errors x -3.2/-3.0/-4.9cm, y +3.6/+0.6/+4.3cm;
+# +0.033/+0.028 put two real grasps (near-left, far-right) on the cube within ~1cm.
+# (July values were 0.015 / 0.022 for the un-bent bracket.)
+FWD = float(os.environ.get('JR_FWD', '0.033'))
+Y_OFFSET = float(os.environ.get('JR_Y_OFFSET', '0.028'))
 GRASP_FRAC = float(os.environ.get('JR_GRASP_FRAC', '0.35'))   # grip THIS frac up the body;
 # lowered from 0.45: the fingertips sit ABOVE the IK point, so 0.45 gripped near the top
 # (unstable). ~0.35 lands the actual grip nearer the object's mid-height. Tunable.
 YAW_NEUTRAL = float(os.environ.get('JR_YAW_NEUTRAL', '504'))
-YAW_GAIN = float(os.environ.get('JR_YAW_GAIN', '4.17'))   # pulse/deg; sign NEEDS calibration
+# Yaw source (2026-09-02 iPad-line calibration): 'edge' = RGB edges on the cube top,
+# arm-frame angle (CCW+ seen from above); 'image' = legacy raw minAreaRect image angle
+# (sign-flipped AND compressed by perspective: a +15 cube reads ~-11). The wrist gain sign
+# therefore depends on the mode: -4.17 pulse/deg for edge/floor, +4.17 for image
+# (phase B 2026-09-02: edge +30 with -4.17 turned the closing axis CCW as required).
+YAW_MODE = os.environ.get('JR_YAW_MODE', 'edge')
+YAW_GAIN = float(os.environ.get('JR_YAW_GAIN', '-4.17' if YAW_MODE in ('edge', 'floor') else '4.17'))
 ABORT_FAILS = 3   # reachability is decided purely by the multi-pitch IK solver (no x thresholds)
 AUTO_DRIVE = os.environ.get('JR_AUTO_DRIVE', '1') != '0'  # M6: drive the base to fetch out-of-reach / too-close targets
 MAX_DRIVES = int(os.environ.get('JR_MAX_DRIVES', '12'))   # total base moves per run (fetch/strafe/reverse)
@@ -52,10 +62,25 @@ EDGE_PX = float(os.environ.get('JR_EDGE_PX', '190'))      # |u-cx| beyond this =
 CENTER_PX = float(os.environ.get('JR_CENTER_PX', '110'))  # |u-cx| within this = centred enough
 PAN_GAIN = float(os.environ.get('JR_PAN_GAIN', '4.17'))   # base servo1 pulse/deg (sign NEEDS calib)
 
-HAND2CAM = np.array([[0.0, 0.0, 1.0, -0.101],
-                     [-1.0, 0.0, 0.0, 0.011],
-                     [0.0, -1.0, 0.0, 0.045],
-                     [0.0, 0.0, 0.0, 1.0]])
+# Hand-eye: camera pose in the hand (end-effector) frame. Nominal = camera parallel to the
+# gripper (z_cam = x_hand, x_cam = -y_hand, y_cam = -z_hand) + measured offset.
+# 2026-09-02: the sheet-metal camera bracket bent in transit; the floor-normal check
+# (scripts/handeye_check.py, 96 frames) shows the camera pitched DOWN 16.7 deg (roll 0.06)
+# relative to nominal. Modelled as a rotation about y_hand; JR_CAM_PITCH=0 restores nominal.
+CAM_PITCH = float(os.environ.get('JR_CAM_PITCH', '16.7'))   # deg, camera pitched down vs hand x
+
+
+def _hand2cam(pitch_deg):
+    r0 = np.array([[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+    c, s = math.cos(math.radians(pitch_deg)), math.sin(math.radians(pitch_deg))
+    ry = np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+    h = np.eye(4)
+    h[:3, :3] = ry @ r0
+    h[:3, 3] = [-0.101, 0.011, 0.045]      # translation: ruler-verified 2026-07; re-check after the bend
+    return h
+
+
+HAND2CAM = _hand2cam(CAM_PITCH)
 FLOOR = ((1, 500), (2, 700), (3, 15), (4, 175), (5, 500))
 OBSERVE = ((1, 500), (2, 720), (3, 100), (4, 120), (5, 500))
 GRIPPER_OPEN, GRIPPER_CLOSE = 200, 600
@@ -303,7 +328,7 @@ class GraspAll(Node):
         # the arm frame, atan2(y, x) -- no servo1 pulse model involved. `pos` is the
         # arm-frame grasp position (from grasp_pos). Validate with scripts/yaw_calib.py
         # (paper-line rig) before switching the default to 'floor'.
-        mode = os.environ.get('JR_YAW_MODE', 'image')
+        mode = YAW_MODE
         ep = self.get_endpoint()
         angs, longs, elongs = [], [], []
         for _ in range(n):
@@ -333,8 +358,13 @@ class GraspAll(Node):
             c = sum(math.cos(math.radians(2 * a)) for a in longs)
             long_mean = math.degrees(math.atan2(s, c)) / 2.0
             grip = (long_mean % 180.0) - 90.0      # perpendicular, wrapped to (-90, 90]
-            print('  [YAW] elongated (ratio %.1f): long axis %+.0f -> grip %+.0f' %
-                  (sorted(elongs)[len(elongs) // 2], long_mean, grip))
+            if mode != 'image':
+                # angle_long is an IMAGE angle; arm-frame angles have the opposite sign
+                # (calibration 2026-09-02). Perspective compression is ignored here -- a
+                # thin body tolerates ~10deg.
+                grip = -grip
+            print('  [YAW] elongated (ratio %.1f): long axis %+.0f -> grip %+.0f (%s)' %
+                  (sorted(elongs)[len(elongs) // 2], long_mean, grip, mode))
             return grip, len(longs)
         mean = self.circ_mean_angle(angs)
         if mode in ('floor', 'edge'):
@@ -998,6 +1028,46 @@ def main():
         # DDS-discover the camera publishers (worse after many short-lived nodes);
         # the camera itself being down still fails, just slower
         print('no camera'); return
+
+    if mode == 'grasp1':
+        # CALIBRATION / TEST: one grasp of the object nearest the image centre -- no zone
+        # scan, no driving, no self-verification (the eye of the operator is the judge).
+        #   grasp1       detect -> pose + yaw -> grasp -> lift -> release -> home
+        #   grasp1 dry   compute and print the target pose + wrist angle only, no motion
+        #                (measure the cube centre from the arm base axis with a ruler and
+        #                 compare with pos x/y: localization check after transport, 2026-09)
+        dry = len(sys.argv) > 2 and sys.argv[2] == 'dry'
+        node.home()
+        node.fresh()
+        fl = node.fit_floor(None)
+        cx, cy = node.K[2], node.K[5]
+        insts = node.detect()
+        if not insts:
+            print('nothing detected'); node.destroy_node(); rclpy.shutdown(); return
+        inst = min(insts, key=lambda o: (o['u'] - cx) ** 2 + (o['v'] - cy) ** 2)
+        ep = node.get_endpoint()
+        print('camera FK position (arm frame): %s' % np.round(ep[:3, 3], 3).tolist())
+        print('floor plane (cam frame): n=%s d=%.3f' %
+              ((np.round(fl[0], 3).tolist(), fl[1]) if fl else (None, float('nan'))))
+        pos, h = node.grasp_pos(inst)
+        print('target %s px(%d,%d) depth=%.3f area=%.0f -> grasp pos=%s  h=%.3f' %
+              (inst['id'], inst['u'], inst['v'], inst.get('depth', 0.0), inst['area'],
+               np.round(pos, 3).tolist() if pos else None, h))
+        if pos is None:
+            node.destroy_node(); rclpy.shutdown(); return
+        sa, ns = node.stable_yaw(inst['u'], inst['v'], pos)
+        s5 = int(max(0, min(1000, YAW_NEUTRAL + YAW_GAIN * sa)))
+        print('yaw (%s): wrist offset %+.1f deg over %d frames -> servo5=%d (raw image angle %+.0f)' %
+              (YAW_MODE, sa, ns, s5, inst['angle']))
+        if dry:
+            print('DRY RUN: no motion. Ruler check: cube centre should be x=%.3f m ahead of and '
+                  'y=%.3f m left of the arm base axis.' % (pos[0], pos[1]))
+        else:
+            print('grasp ->', node.grasp(inst))
+            time.sleep(1.0)
+            node.move(0.6, ((10, GRIPPER_OPEN),))     # release at OBSERVE height
+            node.home()
+        node.destroy_node(); rclpy.shutdown(); return
 
     if mode == 'drivetest':
         # guarded-motion test: drivetest <dist> [x|y] -- exercises the REAL drive()
