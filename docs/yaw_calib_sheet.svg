@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 470" width="1440" height="940" font-family="Segoe UI, Microsoft YaHei, sans-serif">
+  <rect width="720" height="470" fill="#ffffff"/>
+
+  <!-- ================= LEFT: the sheet (1 unit = 1 mm, A4 210x297) ================= -->
+  <g transform="translate(30,25)">
+    <text x="105" y="-8" font-size="13" text-anchor="middle" fill="#333">左：纸上画什么（A4 竖放，1:1 比例，线长 16 cm）</text>
+    <rect x="0" y="0" width="210" height="297" fill="#fafafa" stroke="#999" stroke-width="1"/>
+
+    <!-- center at (105,160). forward = up. positive = CCW from up (toward viewer's LEFT) -->
+    <g transform="translate(105,160)">
+      <!-- 0 deg line: long, full height, with arrow = forward -->
+      <line x1="0" y1="125" x2="0" y2="-140" stroke="#000" stroke-width="1.6"/>
+      <polygon points="0,-148 -5,-136 5,-136" fill="#000"/>
+      <text x="0" y="-152" font-size="9" text-anchor="middle" fill="#000">0°  ↑ 车头方向（前）</text>
+
+      <!-- +15 / -15 -->
+      <g stroke="#1f77b4" stroke-width="1.2">
+        <line x1="20.7" y1="77.3" x2="-20.7" y2="-77.3"/>
+        <line x1="-20.7" y1="77.3" x2="20.7" y2="-77.3"/>
+      </g>
+      <!-- +30 / -30 -->
+      <g stroke="#2ca02c" stroke-width="1.2">
+        <line x1="40" y1="69.3" x2="-40" y2="-69.3"/>
+        <line x1="-40" y1="69.3" x2="40" y2="-69.3"/>
+      </g>
+      <!-- +40 / -40 -->
+      <g stroke="#d62728" stroke-width="1.2">
+        <line x1="51.4" y1="61.3" x2="-51.4" y2="-61.3"/>
+        <line x1="-51.4" y1="61.3" x2="51.4" y2="-61.3"/>
+      </g>
+
+      <!-- labels at the upper ends -->
+      <text x="-26" y="-84" font-size="8.5" text-anchor="end" fill="#1f77b4">+15°</text>
+      <text x="26" y="-84" font-size="8.5" text-anchor="start" fill="#1f77b4">−15°</text>
+      <text x="-45" y="-74" font-size="8.5" text-anchor="end" fill="#2ca02c">+30°</text>
+      <text x="45" y="-74" font-size="8.5" text-anchor="start" fill="#2ca02c">−30°</text>
+      <text x="-56" y="-63" font-size="8.5" text-anchor="end" fill="#d62728">+40°</text>
+      <text x="56" y="-63" font-size="8.5" text-anchor="start" fill="#d62728">−40°</text>
+
+      <!-- center dot -->
+      <circle cx="0" cy="0" r="1.6" fill="#000"/>
+
+      <!-- example cube (43 mm) placed on the +30 line: one edge along the line -->
+      <g transform="rotate(-30)">
+        <rect x="-21.5" y="-21.5" width="43" height="43" fill="none" stroke="#2ca02c" stroke-width="0.9" stroke-dasharray="3,2"/>
+      </g>
+      <text x="0" y="98" font-size="8" text-anchor="middle" fill="#2ca02c">示例（虚线框）：方块一条边贴着 +30° 线，</text>
+      <text x="0" y="109" font-size="8" text-anchor="middle" fill="#2ca02c">方块中心压在交点上</text>
+    </g>
+
+    <!-- sign convention -->
+    <g transform="translate(14,20)">
+      <text x="0" y="0" font-size="8" fill="#444">俯视：逆时针为正</text>
+      <text x="0" y="11" font-size="8" fill="#444">（线的远端偏向车的左侧 = 正）</text>
+    </g>
+    <g transform="translate(6,278)">
+      <text x="0" y="0" font-size="8" fill="#444">车在纸的这一侧（下方）；不贴 AprilTag</text>
+    </g>
+  </g>
+
+  <!-- ================= RIGHT: placement, top view (1 unit = 1 mm, scale 0.5) ================= -->
+  <g transform="translate(300,25)">
+    <text x="200" y="-8" font-size="13" text-anchor="middle" fill="#333">右：纸怎么摆（俯视，车头朝上）</text>
+    <g transform="translate(60,10) scale(0.55)">
+      <!-- sheet, centre 240 mm ahead of the arm base -->
+      <rect x="145" y="0" width="210" height="297" fill="#fafafa" stroke="#999"/>
+      <!-- lines on the sheet (small copy) -->
+      <g transform="translate(250,160)">
+        <line x1="0" y1="125" x2="0" y2="-140" stroke="#000" stroke-width="2"/>
+        <g stroke="#1f77b4" stroke-width="1.5"><line x1="20.7" y1="77.3" x2="-20.7" y2="-77.3"/><line x1="-20.7" y1="77.3" x2="20.7" y2="-77.3"/></g>
+        <g stroke="#2ca02c" stroke-width="1.5"><line x1="40" y1="69.3" x2="-40" y2="-69.3"/><line x1="-40" y1="69.3" x2="40" y2="-69.3"/></g>
+        <g stroke="#d62728" stroke-width="1.5"><line x1="51.4" y1="61.3" x2="-51.4" y2="-61.3"/><line x1="-51.4" y1="61.3" x2="51.4" y2="-61.3"/></g>
+        <circle cx="0" cy="0" r="3" fill="#000"/>
+      </g>
+
+      <!-- robot body (JetRover ~ 300 x 250 mm footprint) below the sheet -->
+      <g transform="translate(250,400)">
+        <rect x="-125" y="-40" width="250" height="220" rx="14" fill="#e8eef7" stroke="#345" stroke-width="2"/>
+        <!-- wheels -->
+        <rect x="-150" y="-20" width="22" height="70" fill="#556"/>
+        <rect x="128" y="-20" width="22" height="70" fill="#556"/>
+        <rect x="-150" y="100" width="22" height="70" fill="#556"/>
+        <rect x="128" y="100" width="22" height="70" fill="#556"/>
+        <!-- arm base at the front -->
+        <circle cx="0" cy="0" r="22" fill="#fff" stroke="#345" stroke-width="2"/>
+        <text x="0" y="5" font-size="16" text-anchor="middle" fill="#345">臂底座</text>
+        <!-- centre line of the chassis -->
+        <line x1="0" y1="180" x2="0" y2="-40" stroke="#345" stroke-width="1.5" stroke-dasharray="8,6"/>
+        <text x="0" y="90" font-size="18" text-anchor="middle" fill="#345">车身中线</text>
+        <text x="0" y="165" font-size="14" text-anchor="middle" fill="#345">（车尾）</text>
+      </g>
+
+      <!-- dimension: arm base -> sheet centre = 240 mm -->
+      <line x1="390" y1="160" x2="390" y2="400" stroke="#c33" stroke-width="1.5"/>
+      <line x1="382" y1="160" x2="398" y2="160" stroke="#c33" stroke-width="1.5"/>
+      <line x1="382" y1="400" x2="398" y2="400" stroke="#c33" stroke-width="1.5"/>
+      <text x="400" y="285" font-size="18" fill="#c33">≈ 24 cm</text>
+      <!-- alignment: 0 deg line collinear with chassis centre line -->
+      <line x1="250" y1="285" x2="250" y2="360" stroke="#c33" stroke-width="1.5" stroke-dasharray="6,5"/>
+      <text x="110" y="330" font-size="16" fill="#c33">0° 线与车身中线</text>
+      <text x="110" y="350" font-size="16" fill="#c33">在同一条直线上</text>
+    </g>
+    <g transform="translate(0,372)" font-size="11" fill="#333">
+      <text x="0" y="0">1. 纸用胶带四角贴平在地上，车和纸在整个测试中都不动。</text>
+      <text x="0" y="16">2. 方块中心压在交点上，一条边贴着某条线；每条线测完换下一条。</text>
+      <text x="0" y="32">3. 测"位置依赖"时不重画：把整张纸挪到画面左/右/近/远各测一轮。</text>
+      <text x="0" y="48">4. 角度只画到 ±40°，方块是正方形，45° 分不清正负。</text>
+    </g>
+  </g>
+</svg>
