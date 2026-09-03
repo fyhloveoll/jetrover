@@ -15,14 +15,16 @@ timeout "$TMO" ros2 action send_goal /navigate_to_pose nav2_msgs/action/Navigate
 T1=$(date +%s.%N)
 echo "elapsed: $(python3 -c "print(round($T1-$T0,1))") s"
 echo "amcl pose now:"
-timeout 6 ros2 topic echo --once /amcl_pose 2>/dev/null | python3 -c '
-import sys, re, math
-t = sys.stdin.read()
-def g(k):
-    m = re.search(k + r":\s*([-\d.e]+)", t); return float(m.group(1)) if m else float("nan")
-try:
-    o = t.split("orientation:")[1]
-qz = float(re.search(r"z:s*([-d.e]+)", o).group(1)) if o else float("nan")
-qw = float(re.search(r"w:s*([-d.e]+)", o).group(1)) if o else float("nan")
-x, y, z, w = g("x"), g("y"), qz, qw
-print("  x=%.3f y=%.3f yaw=%.1f deg" % (x, y, math.degrees(2*math.atan2(z, w))))'
+timeout 8 ros2 topic echo --once /amcl_pose 2>/dev/null > /tmp/amcl_pose.txt
+python3 - <<'PYEOF'
+import math, re
+t = open('/tmp/amcl_pose.txt').read()
+def num(block, key):
+    m = re.search(r'\b' + key + r':\s*([-+\d.eE]+)', block)
+    return float(m.group(1)) if m else float('nan')
+pos = t.split('position:')[1].split('orientation:')[0] if 'position:' in t else ''
+ori = t.split('orientation:')[1] if 'orientation:' in t else ''
+x, y = num(pos, 'x'), num(pos, 'y')
+qz, qw = num(ori, 'z'), num(ori, 'w')
+print('  x=%.3f y=%.3f yaw=%.1f deg' % (x, y, math.degrees(2 * math.atan2(qz, qw))))
+PYEOF
