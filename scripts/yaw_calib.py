@@ -141,8 +141,16 @@ def main():
                 if not sel:
                     print('[grasp] no %s object among %s\n' % (want, [o['id'] for o in insts]), flush=True); continue
                 insts = sel
-            inst = min(insts, key=lambda o: (o['u'] - cx) ** 2 + (o['v'] - cy) ** 2)
-            pos, h = node.grasp_pos(inst)
+            # candidates by distance from the image centre; skip ones grasp_pos rejects (bottom-
+            # truncated / too close -- the robot's own green frame edge shows up at ~0.18 m)
+            pos, h, inst = None, 0.0, None
+            for cand in sorted(insts, key=lambda o: (o['u'] - cx) ** 2 + (o['v'] - cy) ** 2):
+                p_, h_ = node.grasp_pos(cand)
+                if p_ is not None:
+                    pos, h, inst = p_, h_, cand; break
+                print('[grasp] skip %s px(%d,%d) depth=%.3f: no valid grasp position' % (cand['id'], cand['u'], cand['v'], cand.get('depth', 0.0)), flush=True)
+            if inst is None:
+                print('[grasp] no graspable candidate\n', flush=True); continue
             print('[grasp] target %s px(%d,%d) depth=%.3f -> pos=%s h=%.3f' %
                   (inst['id'], inst['u'], inst['v'], inst.get('depth', 0.0),
                    np.round(pos, 3).tolist() if pos else None, h), flush=True)

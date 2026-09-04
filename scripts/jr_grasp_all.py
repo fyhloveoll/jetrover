@@ -720,6 +720,9 @@ class GraspAll(Node):
     CL_TOL = float(os.environ.get('JR_CL_TOL', '0.004'))          # m, converged when |offset| below
     CL_MAX_STEP = float(os.environ.get('JR_CL_MAX_STEP', '0.03'))  # m, per-iteration correction clamp
     CL_LOW_DZ = float(os.environ.get('JR_CL_LOW_DZ', '0.03'))      # stage-2 look height above grasp z (0 = off)
+    # constant camera->gripper-centre residual: after visual convergence the gripper still landed
+    # ~1.5 cm toward the base (c1, 09-04). Applied along the radial (base->target) direction.
+    CL_RADIAL_BIAS = float(os.environ.get('JR_CL_RADIAL', '0.015'))
     CL_HUE_TOL = int(os.environ.get('JR_CL_HUE_TOL', '12'))        # HSV hue distance for the colour template
 
     def colour_template(self, inst):
@@ -816,7 +819,7 @@ class GraspAll(Node):
             if err > 0.08:
                 print('  [CL:%s] offset %.0f mm implausible -> stop' % (label, err * 1000))
                 return tgt, 'implausible', n
-            if prev_err is not None and err > prev_err * 1.2:
+            if prev_err is not None and err > max(prev_err * 1.5, 2 * self.CL_TOL):   # noise floor ~4 mm: 4->6.7 is not divergence
                 # the correction made it worse: sign/scale of the mapping is off -> revert
                 print('  [CL:%s] diverging (%.1f -> %.1f mm) -> revert to previous target' % (label, prev_err * 1000, err * 1000))
                 return prev_tgt, 'diverged', n
@@ -889,10 +892,14 @@ class GraspAll(Node):
         # pixel is worth fewer mm and the descent error of stage 1's move is absorbed
         st2, n2 = 'skipped', 0
         z_low = float(pos[2]) + self.CL_LOW_DZ
-        if st1 in ('converged', 'max-iters') and self.CL_LOW_DZ > 0 and self.CL_LOW_DZ < self.CL_PRE_DZ:
+        if st1 in ('converged', 'max-iters', 'diverged') and self.CL_LOW_DZ > 0 and self.CL_LOW_DZ < self.CL_PRE_DZ:
             if self.move_to([tgt[0], tgt[1], z_low], s5=500, dur=0.8) is not None:
                 time.sleep(0.4)
                 tgt, st2, n2 = self.cl_refine(tmpl, tgt, z_low, z_top, side_m, 2, debug_dir, 'low')
+        rr = math.hypot(tgt[0], tgt[1])
+        if rr > 1e-6 and self.CL_RADIAL_BIAS != 0.0:
+            tgt = [tgt[0] + self.CL_RADIAL_BIAS * tgt[0] / rr, tgt[1] + self.CL_RADIAL_BIAS * tgt[1] / rr]
+            print("  [CL] radial bias %+.1f mm applied" % (self.CL_RADIAL_BIAS * 1000))
         moved = math.hypot(tgt[0] - pos[0], tgt[1] - pos[1]) * 1000
         tag = 'pre:%s/%d low:%s/%d' % (st1, n1, st2, n2)
         print('  [CL] %s; target %s -> %s (moved %.1f mm)' %
