@@ -68,6 +68,12 @@ ros2 topic hz /odom_raw                                          # 板→主机�
 python3 buzz.py                                                  # 命令通路：蜂鸣两声
 ```
 
+## 供电模式（2026-09 起）
+
+- **插线模式**：12V 5A 适配器直插 Jetson，扩展板走电池。**绝不发底盘移动指令**（`/controller/cmd_vel`、导航目标、`drive()`、`motor_probe.sh` 一律禁止），只做机械臂/感知/离线工作。
+- **电池模式**：扩展板 DC 线接 Jetson，才能开车、建图、导航。单次 ≤40 min，锁死多发生在开机 1h20 后。
+- 关机顺序：`sudo poweroff` → 灯灭 → 拔适配器 → 关车开关。
+
 ## 硬件事实
 
 - 控制板 `/dev/rrc→ttyACM0`，雷达 `/dev/lidar→ttyUSB0`，相机 Dabai DCW（USB）。
