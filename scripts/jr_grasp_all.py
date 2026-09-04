@@ -201,8 +201,20 @@ class GraspAll(Node):
         return diff >= 2.0
 
     # ---- perception ----
+    SELF_MIN_DEPTH = float(os.environ.get('JR_SELF_MIN_DEPTH', '0.20'))   # m; nearer = the robot's own body
+
     def detect(self):
-        return det.detect(self.rgb, np.asarray(self.depth), self.K)
+        # Drop detections nearer than SELF_MIN_DEPTH: at the FLOOR pose the camera is ~0.31 m
+        # above the floor and the nearest visible floor point is ~0.25 m away, so anything at
+        # 0.12-0.18 m is the robot's own front frame (visible since the camera bracket bent,
+        # 09-04: 'green' blob elong 6-10 at the bottom edge). Without this the run-mode
+        # bottom-edge logic would reverse the base to 'see' it.
+        out = []
+        for o in det.detect(self.rgb, np.asarray(self.depth), self.K):
+            if 0.0 < o.get('depth', 1.0) < self.SELF_MIN_DEPTH:
+                continue
+            out.append(o)
+        return out
 
     @staticmethod
     def circ_mean_angle(angles):
