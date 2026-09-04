@@ -126,6 +126,8 @@ def main():
                 print('[verdict] recorded: %s\n' % ' '.join(parts[1:]), flush=True)
                 continue
             dry = 'dry' in [p.lower() for p in parts[1:]]
+            colors = ('red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple')
+            want = [p.lower() for p in parts[1:] if p.lower() in colors]
             tag = ' '.join(p for p in parts[1:] if p.lower() != 'dry')
             node.home()
             if not node.fresh():
@@ -134,6 +136,11 @@ def main():
             insts = node.detect()
             if not insts:
                 print('[grasp] nothing detected\n', flush=True); continue
+            if want:
+                sel = [o for o in insts if any(str(o['id']).startswith(c) for c in want)]
+                if not sel:
+                    print('[grasp] no %s object among %s\n' % (want, [o['id'] for o in insts]), flush=True); continue
+                insts = sel
             inst = min(insts, key=lambda o: (o['u'] - cx) ** 2 + (o['v'] - cy) ** 2)
             pos, h = node.grasp_pos(inst)
             print('[grasp] target %s px(%d,%d) depth=%.3f -> pos=%s h=%.3f' %

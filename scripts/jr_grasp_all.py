@@ -565,6 +565,13 @@ class GraspAll(Node):
             pos = [float(top[0]) + FWD, float(top[1]) - Y_OFFSET, z]
         else:
             pos = [float(base[0]) + FWD, float(base[1]) - Y_OFFSET, z]
+        # REGION FIX (empirical, 2026-09-04): right-side targets (y < -0.05) landed ~2 cm far
+        # and ~1 cm RIGHT of the cube (two misses at (0.27,-0.11)); front/left targets were
+        # centred. Consistent with the pose-dependent vendor-FK error seen in the hand-eye
+        # board test (right poses worst). Proper fix = arm kinematic calibration.
+        if pos[1] < -0.05:
+            pos[0] -= 0.010     # r1-r3 (3 repeats, fixed params): ~1 cm near with -0.020
+            pos[1] += 0.026     # r1-r3: still ~1 cm right with +0.016 (b8 -0.012 -> 2 cm right, b9 +0.008 -> 0.8 cm right)
         if pos[0] < 0.08:
             # behind/under the robot = garbage from an extreme rotated view
             print('  reject %s: insane x=%.2f' % (inst['id'], pos[0]))
