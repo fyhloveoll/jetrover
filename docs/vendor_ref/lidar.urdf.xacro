@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="lidar" xmlns:xacro="http://ros.org/wiki/xacro" >
+  <xacro:property name="M_PI" value="3.1415926535897931"/>
+  <link
+    name="lidar_link">
+    <inertial>
+      <origin
+        xyz="-0.000511459223461241 -0.00026215532436116 -0.0101267502723355"
+        rpy="0 0 0" />
+      <mass
+        value="0.165604343849592" />
+      <inertia
+        ixx="5.88498679907636E-05"
+        ixy="4.6459735242599E-07"
+        ixz="-1.56610114830903E-07"
+        iyy="5.96988334453293E-05"
+        iyz="-8.03105723289238E-08"
+        izz="0.000108238967260097" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/common/lidar_link.stl" />
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <!--<collision>-->
+      <!--<origin-->
+        <!--xyz="0 0 0"-->
+        <!--rpy="0 0 0" />-->
+      <!--<geometry>-->
+        <!--<mesh-->
+          <!--filename="package://jetrover_description/meshes/common/lidar_link.stl" />-->
+      <!--</geometry>-->
+    <!--</collision>-->
+  </link>
+  <joint
+    name="lidar_joint"
+    type="fixed">
+    <origin
+      xyz="0.0900034859353204 0 0.0405195774179554"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="lidar_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+</robot>

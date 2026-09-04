@@ -1,0 +1,35 @@
+pose  0 (0.22,0.00,0.20,p80): 12 tags, pnp rms 0.71 px, board at cam dist 0.308 m
+pose  1 (0.22,0.00,0.14,p80):  9 tags, pnp rms 0.75 px, board at cam dist 0.254 m
+pose  2 (0.28,0.00,0.17,p80):  8 tags, pnp rms 0.71 px, board at cam dist 0.251 m
+pose  3 (0.22,0.07,0.17,p80): 11 tags, pnp rms 0.80 px, board at cam dist 0.269 m
+pose  4 (0.22,-0.07,0.17,p80): 10 tags, pnp rms 0.77 px, board at cam dist 0.300 m
+pose  5 (0.26,0.10,0.15,p80):  8 tags, pnp rms 0.84 px, board at cam dist 0.229 m
+pose  6 (0.26,-0.10,0.15,p80):  6 tags, pnp rms 0.79 px, board at cam dist 0.279 m
+pose  7 (0.20,0.00,0.18,p60): 12 tags, pnp rms 0.75 px, board at cam dist 0.307 m
+pose  8 (0.24,0.06,0.16,p60):  9 tags, pnp rms 0.75 px, board at cam dist 0.271 m
+pose  9 (0.24,-0.06,0.16,p60):  8 tags, pnp rms 0.83 px, board at cam dist 0.293 m
+pose 10 (0.30,0.00,0.14,p60):  5 tags, pnp rms 0.55 px, board at cam dist 0.238 m
+pose 11 (0.18,0.00,0.20,p45): 12 tags, pnp rms 0.75 px, board at cam dist 0.339 m
+pose 12 (0.22,0.08,0.18,p45):  8 tags, pnp rms 0.77 px, board at cam dist 0.302 m
+pose 13 (0.22,-0.08,0.18,p45):  7 tags, pnp rms 0.88 px, board at cam dist 0.325 m
+pose 14 (0.16,0.00,0.22,p90):  6 tags, pnp rms 0.70 px, board at cam dist 0.335 m
+pose 15 (0.24,0.00,0.22,p90): 12 tags, pnp rms 0.76 px, board at cam dist 0.320 m
+
+16 usable views
+current HAND2CAM (JR_CAM_PITCH=16.7): board position spread 14.9 mm, orientation spread 2.42 deg
+TSAI       spread 14.7 mm / 2.59 deg   cam forward in hand [0.957, -0.015, -0.291] (pitch 16.9 deg)   t = [-101.0, -10.9, 39.5] mm
+PARK       spread 13.8 mm / 2.39 deg   cam forward in hand [0.963, -0.006, -0.268] (pitch 15.5 deg)   t = [-101.5, 5.9, 37.3] mm
+HORAUD     spread 13.8 mm / 2.39 deg   cam forward in hand [0.964, -0.006, -0.268] (pitch 15.5 deg)   t = [-101.5, 5.9, 37.3] mm
+DANIILIDIS spread 15.5 mm / 2.57 deg   cam forward in hand [0.954, -0.02, -0.298] (pitch 17.3 deg)   t = [-97.9, -0.5, 43.0] mm
+
+BEST: HORAUD (spread 13.8 mm). Proposed HAND2CAM:
+[[-0.0007 -0.2677  0.9635 -0.1015]
+ [-0.9998 -0.0173 -0.0056  0.0059]
+ [ 0.0182 -0.9634 -0.2676  0.0373]
+ [ 0.      0.      0.      1.    ]]
+current for reference:
+[[ 0.     -0.2874  0.9578 -0.101 ]
+ [-1.      0.      0.      0.011 ]
+ [ 0.     -0.9578 -0.2874  0.045 ]
+ [ 0.      0.      0.      1.    ]]
+saved ~/jetrover_ws/handeye_result.npz  (note: cam_to_arm() still subtracts 0.01 from cam x -- remove that hack when adopting a calibrated matrix)

@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="jetrover" xmlns:xacro="http://ros.org/wiki/xacro" >
+  <xacro:property name="M_PI"               value="3.1415926535897931"/>
+  <link name="base_footprint"/>
+  <xacro:property name="base_link_mass"     value="1.6" /> 
+  <xacro:property name="base_link_w"        value="0.30"/>
+  <xacro:property name="base_link_h"        value="0.15"/>
+  <xacro:property name="base_link_d"        value="0.10"/>
+
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0.0 0.0 ${0.05 + 0.0654867643253843}" rpy="0 0 0"/>
+  </joint>
+  <link name="w_link"/>
+  <joint
+    name="w_joint"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="w_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="base_link">
+    <xacro:box_inertial m="${base_link_mass}" w="${base_link_w}" h="${base_link_h}" d="${base_link_d}" x="0" y="0" z="-0.15" />
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/base_link.stl" />
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/base_link.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="base_green_link">
+    <inertial>
+      <origin
+        xyz="-0.00566619792766996 -8.64872034993854E-05 -0.0425908261638196"
+        rpy="0 0 0" />
+      <mass
+        value="0.116775968880593" />
+      <inertia
+        ixx="0.000202777869278958"
+        ixy="3.71841760667043E-08"
+        ixz="-1.46801173735848E-10"
+        iyy="0.000573255296584491"
+        iyz="9.13614188570706E-11"
+        izz="0.000745426117180395" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/base_green_link.stl" />
+      </geometry>
+      <material name="green"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/base_green_link.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="base_green_joint"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="base_green_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="wheel_left_front_link">
+    <inertial>
+      <origin
+        xyz="-0.213334280297957 -0.203369638948946 -0.000334615151787748"
+        rpy="0 0 0" />
+      <mass
+        value="0.124188560741815" />
+      <inertia
+        ixx="0.000108426797272382"
+        ixy="4.75710998528631E-10"
+        ixz="-4.51221408656634E-09"
+        iyy="0.000198989755900859"
+        iyz="1.62770134465076E-11"
+        izz="0.000108425820065752" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/wheel_left_front_link.stl" />
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/wheel_left_front_link.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="wheel_left_front_joint"
+    type="fixed">
+    <origin
+      xyz="-0.106579884267788 -0.0916974467397005 -0.0654867643253843"
+      rpy="0 0 3.14159265358979" />
+    <parent
+      link="base_link" />
+    <child
+      link="wheel_left_front_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="wheel_left_back_link">
+    <inertial>
+      <origin
+        xyz="0.213327728411634 -0.202539554308172 0.000327384188806199"
+        rpy="0 0 0" />
+      <mass
+        value="0.132308742016336" />
+      <inertia
+        ixx="0.000109087078613509"
+        ixy="8.99498920521203E-09"
+        ixz="1.06792966043121E-08"
+        iyy="0.000199665017441936"
+        iyz="5.6160921837198E-09"
+        izz="0.000109056977556842" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/wheel_left_back_link.stl" />
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/wheel_left_back_link.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="wheel_left_back_joint"
+    type="fixed">
+    <origin
+      xyz="0.106753653016542 -0.0920004072996187 -0.0658214520621466"
+      rpy="0 0 3.14158803228829" />
+    <parent
+      link="base_link" />
+    <child
+      link="wheel_left_back_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="wheel_right_front_link">
+    <inertial>
+      <origin
+        xyz="-0.213332807255404 0.203675464611681 -0.000332210127461456"
+        rpy="0 0 0" />
+      <mass
+        value="0.124186629923608" />
+      <inertia
+        ixx="0.000108439206695888"
+        ixy="6.85847929033569E-10"
+        ixz="-1.92360226002088E-08"
+        iyy="0.00019900428610234"
+        iyz="-1.53831301269727E-09"
+        izz="0.00010842875904821" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/wheel_right_front_link.stl" />
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/wheel_right_front_link.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="wheel_right_front_joint"
+    type="fixed">
+    <origin
+      xyz="-0.10658 0.091851 -0.065487"
+      rpy="0 0 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="wheel_right_front_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="wheel_right_back_link">
+    <inertial>
+      <origin
+        xyz="0.21333 0.20224 0.00032742"
+        rpy="0 0 0" />
+      <mass
+        value="0.13231" />
+      <inertia
+        ixx="0.00010909"
+        ixy="-8.0297E-09"
+        ixz="1.1828E-08"
+        iyy="0.00019967"
+        iyz="-6.196E-09"
+        izz="0.00010906" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/wheel_right_back_link.stl" />
+      </geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://jetrover_description/meshes/acker/wheel_right_back_link.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="wheel_right_back_joint"
+    type="fixed">
+    <origin
+      xyz="0.10675 0.091848 -0.065821"
+      rpy="0 0 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="wheel_right_back_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+</robot>

@@ -109,6 +109,7 @@ def main():
         print('servo bridge not up'); return
     node.home()
     views = []
+    pulses = []
     for i, (x, y, z, pit) in enumerate(POSES):
         req = ga.SetRobotPose.Request()
         req.position = [float(x), float(y), float(z)]; req.pitch = float(pit)
@@ -137,6 +138,7 @@ def main():
             print('pose %2d (%.2f,%.2f,%.2f,p%d): board not seen (<%d tags)' % (i, x, y, z, pit, MIN_TAGS)); continue
         ep, R, t, rms, ntag = got
         views.append((ep, R, t))
+        pulses.append(p[:5])                 # servo pulses (ids 1-5) for kinematic calibration
         print('pose %2d (%.2f,%.2f,%.2f,p%d): %2d tags, pnp rms %.2f px, board at cam dist %.3f m' %
               (i, x, y, z, pit, ntag, rms, float(np.linalg.norm(t))))
     node.home()
@@ -176,7 +178,8 @@ def main():
         print(H)
         print('current for reference:'); print(H0)
         np.savez(os.path.expanduser('~/jetrover_ws/handeye_result.npz'), H=H, H0=H0,
-                 ep=np.array([v[0] for v in views]), R=np.array(Rt2c), t=np.array(tt2c))
+                 ep=np.array([v[0] for v in views]), R=np.array(Rt2c), t=np.array(tt2c),
+                 pulses=np.array(pulses, dtype=np.float64))
         print('saved ~/jetrover_ws/handeye_result.npz  (note: cam_to_arm() still subtracts 0.01 from cam x --'
               ' remove that hack when adopting a calibrated matrix)')
     node.destroy_node(); rclpy.shutdown()
