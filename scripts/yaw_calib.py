@@ -128,7 +128,7 @@ def main():
             dry = 'dry' in [p.lower() for p in parts[1:]]
             colors = ('red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple')
             want = [p.lower() for p in parts[1:] if p.lower() in colors]
-            tag = ' '.join(p for p in parts[1:] if p.lower() != 'dry')
+            tag = ' '.join(p for p in parts[1:] if p.lower() not in ('dry', 'cl'))
             node.home()
             if not node.fresh():
                 print('[grasp] no camera frames\n', flush=True); continue
@@ -152,6 +152,22 @@ def main():
             s5 = int(max(0, min(1000, ga.YAW_NEUTRAL + ga.YAW_GAIN * sa)))
             print('[grasp] yaw(%s) offset %+.1f (n=%d) servo5=%d  raw image angle %+.0f' %
                   (ga.YAW_MODE, sa, ns, s5, inst['angle']), flush=True)
+            if 'cl' in [p.lower() for p in parts[1:]]:
+                # "grasp cl [dry] [tag]": pre-grasp visual closed loop (grasp_closed_loop);
+                # debug images -> ~/jetrover_ws/cl_frames/
+                dbg = os.path.expanduser('~/jetrover_ws/cl_frames'); os.makedirs(dbg, exist_ok=True)
+                res = node.grasp_closed_loop(inst, debug_dir=dbg, dry=dry)
+                print('[grasp] cl -> %s' % (res,), flush=True)
+                if not dry:
+                    time.sleep(1.0)
+                    node.move(0.6, ((10, ga.GRIPPER_OPEN),))
+                    node.home()
+                with open(batch, 'a') as fb:
+                    fb.write('%.0f,grasp_cl,%s,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.1f,%d,%s\n' %
+                             (time.time(), tag.replace(',', ';'), inst['id'], inst['u'], inst['v'],
+                              pos[0], pos[1], pos[2], h, sa, s5, res[0] + ':' + str(res[1]).replace(',', ';')))
+                print('', flush=True)
+                continue
             res = ('DRY', '')
             if not dry:
                 res = node.grasp(inst)

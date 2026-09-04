@@ -570,7 +570,7 @@ class GraspAll(Node):
         # centred. Consistent with the pose-dependent vendor-FK error seen in the hand-eye
         # board test (right poses worst). Proper fix = arm kinematic calibration.
         if pos[1] < -0.05:
-            pos[0] -= 0.010     # r1-r3 (3 repeats, fixed params): ~1 cm near with -0.020
+            pos[0] -= 0.003     # r1-r3: ~1 cm near with -0.020; r4/v1 still 0.5-1 cm near with -0.010
             pos[1] += 0.026     # r1-r3: still ~1 cm right with +0.016 (b8 -0.012 -> 2 cm right, b9 +0.008 -> 0.8 cm right)
         if pos[0] < 0.08:
             # behind/under the robot = garbage from an extreme rotated view
@@ -707,6 +707,213 @@ class GraspAll(Node):
         det._LBL_MEMO.clear()   # sticky names are pixel-keyed; the drive moved every pixel
 
     # ---- one grasp (location + yaw-aligned + auto-height) ----
+    # ---- pre-grasp visual closed loop (2026-09-04) ----
+    # Open-loop accuracy on this arm is ~1 cm and pose-dependent (vendor FK + servo deadband +
+    # 1 deg hand-eye residual, all growing with reach); a 43 mm cube in a 48 mm gripper needs
+    # 2.5 mm. Eye-in-hand correction at a PRE-GRASP pose closes that gap: the camera and the
+    # gripper are rigidly attached, so "cube at the expected pixel" == "gripper above the cube"
+    # regardless of the arm's absolute error. RGB only (Dabai depth is invalid < ~0.25 m);
+    # metric offset from a pixel ray intersected with the KNOWN cube-top plane (floor + h).
+    CL_PRE_DZ = float(os.environ.get('JR_CL_PRE_DZ', '0.06'))     # pre-grasp height above the grasp z
+    CL_ITERS = int(os.environ.get('JR_CL_ITERS', '3'))
+    CL_GAIN = float(os.environ.get('JR_CL_GAIN', '0.8'))
+    CL_TOL = float(os.environ.get('JR_CL_TOL', '0.004'))          # m, converged when |offset| below
+    CL_MAX_STEP = float(os.environ.get('JR_CL_MAX_STEP', '0.03'))  # m, per-iteration correction clamp
+    CL_LOW_DZ = float(os.environ.get('JR_CL_LOW_DZ', '0.03'))      # stage-2 look height above grasp z (0 = off)
+    CL_HUE_TOL = int(os.environ.get('JR_CL_HUE_TOL', '12'))        # HSV hue distance for the colour template
+
+    def colour_template(self, inst):
+        """median HSV of the object's pixels at the observe pose (inside the depth blob contour)"""
+        cnt = inst.get('cnt')
+        if cnt is None or self.rgb is None:
+            return None
+        mask = np.zeros(self.rgb.shape[:2], np.uint8)
+        cv2.drawContours(mask, [cnt], -1, 255, -1)
+        mask = cv2.erode(mask, np.ones((5, 5), np.uint8))     # drop edge pixels (mixed colours)
+        hsv = cv2.cvtColor(self.rgb, cv2.COLOR_BGR2HSV)
+        px = hsv[mask > 0]
+        if len(px) < 30:
+            return None
+        return tuple(int(v) for v in np.median(px, axis=0))
+
+    def find_by_colour(self, tmpl, min_area=300):
+        """largest blob matching the HSV template in the CURRENT rgb; returns (u, v, area, cnt) or None"""
+        if tmpl is None or self.rgb is None:
+            return None
+        h0, s0, v0 = tmpl
+        hsv = cv2.cvtColor(self.rgb, cv2.COLOR_BGR2HSV)
+        hue = hsv[:, :, 0].astype(np.int16)
+        dh = np.minimum(np.abs(hue - h0), 180 - np.abs(hue - h0))
+        mask = ((dh <= self.CL_HUE_TOL) & (hsv[:, :, 1] >= max(50, s0 // 2)) & (hsv[:, :, 2] >= 40)).astype(np.uint8) * 255
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = [c for c in cnts if cv2.contourArea(c) >= min_area]
+        if not cnts:
+            return None
+        c = max(cnts, key=cv2.contourArea)
+        # min-area-rect CENTRE, not the blob centroid: near-vertical views still show a sliver
+        # of a side face on the camera side, which drags the centroid toward the camera
+        (u, v), _, _ = cv2.minAreaRect(c)
+        return float(u), float(v), cv2.contourArea(c), c
+
+    def cl_look(self, tmpl, z_top, side_m, n_frames=3):
+        """one 'look' at the current pose: average the colour-blob centre over n_frames, gate on
+        plausible area (top face of a `side_m` cube at this range), and return
+        (x, y, u, v, area, cnt, reason). x, y = arm-frame position on the cube-top plane."""
+        ep = self.get_endpoint()
+        us, vs, areas, cnt = [], [], [], None
+        for _ in range(n_frames):
+            if not self.fresh():
+                continue
+            det = self.find_by_colour(tmpl)
+            if det is None:
+                continue
+            us.append(det[0]); vs.append(det[1]); areas.append(det[2]); cnt = det[3]
+        if not us:
+            return None, None, None, None, 0.0, None, 'colour not found'
+        u, v, area = float(np.median(us)), float(np.median(vs)), float(np.median(areas))
+        # expected top-face area from geometry: (side * f / range)^2, range = camera to plane
+        cam = (ep @ HAND2CAM)[:3, 3]
+        rng = max(0.05, float(cam[2] - z_top))
+        exp_area = (side_m * self.K[0] / rng) ** 2 if side_m > 0 else 0.0
+        if exp_area > 0 and not (0.3 * exp_area <= area <= 3.0 * exp_area):
+            return None, None, u, v, area, cnt, 'area %.0f vs expected %.0f (wrong blob / occluded)' % (area, exp_area)
+        xy = self.pixel_on_plane_arm(u, v, ep, z_top)
+        if xy is None:
+            return None, None, u, v, area, cnt, 'bad ray'
+        return xy[0], xy[1], u, v, area, cnt, 'ok'
+
+    def cl_refine(self, tmpl, tgt, z_stage, z_top, side_m, iters, debug_dir=None, label=''):
+        """iterate look -> correct -> move at height z_stage until |offset| < CL_TOL.
+        Divergence guard: if the offset grows after a correction, revert and stop.
+        Returns (tgt, status, n_looks)."""
+        prev_err, prev_tgt = None, list(tgt)
+        n = 0
+        for k in range(iters):
+            x, y, u, v, area, cnt, why = self.cl_look(tmpl, z_top, side_m)
+            n += 1
+            if debug_dir and self.rgb is not None:
+                vis = self.rgb.copy()
+                if cnt is not None:
+                    cv2.drawContours(vis, [cnt], -1, (0, 255, 0), 2)
+                if u is not None:
+                    cv2.circle(vis, (int(u), int(v)), 5, (0, 0, 255), -1)
+                exp = self.project_arm_point([tgt[0], tgt[1], z_top], self.get_endpoint())
+                if exp is not None:
+                    cv2.drawMarker(vis, (int(exp[0]), int(exp[1])), (255, 0, 0), cv2.MARKER_CROSS, 24, 2)
+                cv2.putText(vis, '%s k%d %s' % (label, k, why), (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                cv2.imwrite(os.path.join(debug_dir, 'cl_%d_%s_%d.png' % (int(time.time()), label, k)), vis)
+            if x is None:
+                print('  [CL:%s] look %d: %s -> stop' % (label, k, why))
+                return tgt, 'lost', n
+            dx, dy = x - tgt[0], y - tgt[1]
+            err = math.hypot(dx, dy)
+            print('  [CL:%s] look %d: px(%.0f,%.0f) area %.0f  offset dx %+.1f dy %+.1f mm' %
+                  (label, k, u, v, area, dx * 1000, dy * 1000))
+            if err < self.CL_TOL:
+                return tgt, 'converged', n
+            if err > 0.08:
+                print('  [CL:%s] offset %.0f mm implausible -> stop' % (label, err * 1000))
+                return tgt, 'implausible', n
+            if prev_err is not None and err > prev_err * 1.2:
+                # the correction made it worse: sign/scale of the mapping is off -> revert
+                print('  [CL:%s] diverging (%.1f -> %.1f mm) -> revert to previous target' % (label, prev_err * 1000, err * 1000))
+                return prev_tgt, 'diverged', n
+            prev_err, prev_tgt = err, list(tgt)
+            step = min(self.CL_MAX_STEP, err * self.CL_GAIN)
+            tgt = [tgt[0] + dx / err * step, tgt[1] + dy / err * step]
+            if self.move_to([tgt[0], tgt[1], z_stage], s5=500) is None:
+                print('  [CL:%s] no IK after correction -> keep previous' % label)
+                return prev_tgt, 'no-ik', n
+            time.sleep(0.4)
+        return tgt, 'max-iters', n
+
+    def pixel_on_plane_arm(self, u, v, ep, z_plane):
+        """arm-frame XY where the camera ray through pixel (u, v) meets the horizontal plane z = z_plane"""
+        fx, fy, cx, cy = self.K[0], self.K[4], self.K[2], self.K[5]
+        T = ep @ HAND2CAM
+        o = T[:3, 3]                                             # camera centre in the arm frame
+        d = T[:3, :3] @ np.array([(u - cx) / fx, (v - cy) / fy, 1.0])
+        if abs(d[2]) < 1e-6:
+            return None
+        t = (z_plane - o[2]) / d[2]
+        if t <= 0:
+            return None
+        p = o + t * d
+        return float(p[0]), float(p[1])
+
+    def project_arm_point(self, p_arm, ep):
+        """expected pixel of an arm-frame point through the current camera pose"""
+        fx, fy, cx, cy = self.K[0], self.K[4], self.K[2], self.K[5]
+        T = np.linalg.inv(ep @ HAND2CAM)
+        c = T @ np.array([p_arm[0], p_arm[1], p_arm[2], 1.0])
+        if c[2] <= 1e-6:
+            return None
+        return c[0] / c[2] * fx + cx, c[1] / c[2] * fy + cy
+
+    def move_to(self, pos, s5=None, dur=1.2):
+        """IK to pos (multi-pitch) and move; keeps the wrist at s5 if given. Returns pulses or None."""
+        p, pit = self.solve_ik_multi(pos)
+        if p is None:
+            return None
+        if s5 is not None:
+            p[4] = s5
+        self.move(dur, ((1, p[0]), (2, p[1]), (3, p[2]), (4, p[3]), (5, p[4])))
+        return p
+
+    def grasp_closed_loop(self, inst, debug_dir=None, dry=False):
+        """detect at the observe pose -> pre-grasp pose above the target (wrist neutral) ->
+        up to CL_ITERS visual corrections in the arm XY plane -> wrist yaw -> descend -> close -> lift.
+        Returns (status, detail). debug_dir: save the pre-grasp images with overlays."""
+        pos, h = self.grasp_pos(inst)
+        if pos is None:
+            return ('FAIL', 'no depth')
+        tmpl = self.colour_template(inst)
+        sa, ns = self.stable_yaw(inst['u'], inst['v'], pos)
+        s5 = int(max(0, min(1000, YAW_NEUTRAL + YAW_GAIN * sa)))
+        z_top = pos[2] - h * GRASP_FRAC + h          # cube top plane (grasp z = floor + frac*h)
+        g_open = OPEN_WIDE if inst.get('width_m', 0.0) > WIDE_W else GRIPPER_OPEN
+        print('  [CL] open-loop target %s h=%.3f yaw %+.1f (servo5=%d) colour %s' %
+              (np.round(pos, 3).tolist(), h, sa, s5, tmpl))
+        self.move(0.6, ((10, g_open),))
+        tgt = [float(pos[0]), float(pos[1])]
+        pre = [tgt[0], tgt[1], float(pos[2]) + self.CL_PRE_DZ]
+        if self.move_to(pre, s5=500) is None:            # wrist NEUTRAL during the visual loop
+            return ('OUT_OF_REACH', 'no IK for pre-grasp %s' % np.round(pre, 3).tolist())
+        time.sleep(0.5)
+        side_m = float(inst.get('width_m', 0.0) or 0.0)
+        # stage 1: pre-grasp height (camera ~19 cm above the cube top), up to CL_ITERS looks
+        tgt, st1, n1 = self.cl_refine(tmpl, tgt, pre[2], z_top, side_m, self.CL_ITERS, debug_dir, 'pre')
+        # stage 2 (GG-CNN-style "keep correcting on the way down"): one more look lower, where a
+        # pixel is worth fewer mm and the descent error of stage 1's move is absorbed
+        st2, n2 = 'skipped', 0
+        z_low = float(pos[2]) + self.CL_LOW_DZ
+        if st1 in ('converged', 'max-iters') and self.CL_LOW_DZ > 0 and self.CL_LOW_DZ < self.CL_PRE_DZ:
+            if self.move_to([tgt[0], tgt[1], z_low], s5=500, dur=0.8) is not None:
+                time.sleep(0.4)
+                tgt, st2, n2 = self.cl_refine(tmpl, tgt, z_low, z_top, side_m, 2, debug_dir, 'low')
+        moved = math.hypot(tgt[0] - pos[0], tgt[1] - pos[1]) * 1000
+        tag = 'pre:%s/%d low:%s/%d' % (st1, n1, st2, n2)
+        print('  [CL] %s; target %s -> %s (moved %.1f mm)' %
+              (tag, np.round(pos[:2], 3).tolist(), np.round(tgt, 3).tolist(), moved))
+        if dry:
+            self.home()
+            return ('DRY', tag)
+        # wrist yaw at the current height, then straight down, close, lift
+        z_here = z_low if st2 != 'skipped' else pre[2]
+        self.move_to([tgt[0], tgt[1], z_here], s5=s5, dur=0.8)
+        g_close = int(os.environ.get('JR_CLOSE_THIN', '660')) if 0 < inst.get('width_m', 0.0) < 0.015 else GRIPPER_CLOSE
+        p = self.move_to([tgt[0], tgt[1], float(pos[2])], s5=s5, dur=1.2)
+        if p is None:
+            return ('OUT_OF_REACH', 'no IK at grasp z after correction')
+        time.sleep(0.4)
+        self.move(1.0, ((1, p[0]), (2, p[1]), (3, p[2]), (4, p[3]), (5, p[4]), (10, g_close)))
+        time.sleep(0.4)
+        self.move_to([tgt[0], tgt[1], float(pos[2]) + 0.06], s5=s5, dur=1.2)
+        self.move(1.2, OBSERVE + ((10, g_close),))
+        return ('LIFTED', '%s s5=%d moved=%.0fmm' % (tag, s5, moved))
+
     def grasp(self, inst):
         pos, h = self.grasp_pos(inst)
         if pos is None:
