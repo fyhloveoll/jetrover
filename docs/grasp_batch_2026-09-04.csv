@@ -1,0 +1,45 @@
+1788483873,grasp,check1,blue1,318,203,0.311,-0.005,-0.023,0.046,-30.0,629,DRY
+1788485129,grasp,b1,blue1,316,131,0.272,-0.002,0.028,0.041,-30.3,630,DRY
+1788485172,grasp,b1,blue1,316,131,0.270,-0.002,0.027,0.041,-30.3,630,LIFTED
+1788485241,verdict,b1 yaw-ok position 1.5cm too far forward FWD=0.033
+1788485357,grasp,b2,blue1,329,126,0.272,-0.017,0.027,0.042,-37.8,661,LIFTED
+1788485442,verdict,b2 yaw-ok even further forward missed FWD=0.027 cube -38deg
+1788485760,grasp,b3,blue1,328,139,0.261,-0.015,0.027,0.042,19.4,423,LIFTED
+1788485811,verdict,b3 SUCCESS centred yaw slightly off within tolerance
+1788485880,grasp,b4,blue1,181,149,0.242,0.131,0.028,0.041,36.6,351,LIFTED
+1788485949,verdict,b4 SUCCESS grasped; small yaw deviation (sketch pending)
+1788486104,verdict,b4-detail left finger at edge centre; right finger toward far end: closing axis rotated a few deg (bearing +28; wrist +37)
+1788486251,grasp,b5 blue,blue1,411,126,0.267,-0.101,0.025,0.043,-23.0,599,LIFTED
+1788486296,verdict,b5 MISS right-side cube (0.267;-0.101) yaw -23 servo5 599; cause unclear
+1788486328,grasp,b6 blue,blue1,424,118,0.278,-0.114,0.026,0.042,-21.7,594,LIFTED
+1788486365,verdict,b6 MISS again right side (0.278;-0.114) yaw -21.7 servo5 594
+1788486589,grasp,b7 blue,blue1,194,143,0.249,0.120,0.027,0.043,1.0,499,LIFTED
+1788486647,verdict,b7 SUCCESS left side (0.249;0.12) yaw ok; 0.5cm far
+1788486701,grasp,b8 blue,blue1,448,125,0.250,-0.148,0.026,0.044,-3.5,518,LIFTED
+1788486796,verdict,b8 MISS right side: x ok now; gripper 2cm RIGHT of cube (y fix -0.012 wrong sign)
+1788486848,grasp,b9 blue,blue1,446,118,0.254,-0.129,0.026,0.043,-8.8,540,LIFTED
+1788486876,verdict,b9 right side: still ~0.8cm right after +0.008
+1788486928,grasp,b10 blue,blue1,438,121,0.250,-0.111,0.027,0.044,-15.6,569,LIFTED
+1788487118,verdict,b10 right: ~1cm right; 1cm near (y fix +0.016)
+1788487150,grasp,r1 blue,blue1,442,121,0.253,-0.118,0.026,0.043,-22.0,595,LIFTED
+1788487238,verdict,r1 yaw ok; 1cm right; 0.6cm near
+1788487270,grasp,r2 blue,blue1,456,121,0.250,-0.128,0.028,0.038,-14.8,565,LIFTED
+1788487323,verdict,r2 same: ~1cm right; ~1cm near
+1788487354,grasp,r3 blue,blue1,463,118,0.253,-0.134,0.027,0.043,-18.1,579,LIFTED
+1788487388,verdict,r3 same again: ~1cm right; ~1cm near -> region fix x-0.010 y+0.026
+1788487440,grasp,r4 blue,blue1,455,125,0.257,-0.118,0.026,0.043,-18.5,581,LIFTED
+1788487489,verdict,r4 SUCCESS right side: lateral+yaw ok; 0.7cm near; grasped. PARAMS FROZEN
+1788487568,grasp,v1-right blue,blue1,432,136,0.245,-0.092,0.027,0.042,-19.1,583,LIFTED
+1788487671,verdict,v1-right: more near again -> x fix -0.003
+1788487723,grasp,v2-right blue,blue1,461,113,0.276,-0.124,0.027,0.039,-31.9,637,LIFTED
+1788487791,verdict,v2-right SUCCESS grasped; still slightly near edge
+1788487869,grasp,v3-center blue,blue1,314,70,0.330,0.000,0.027,0.041,-33.9,645,LIFTED
+1788488000,verdict,v3-center MISS far centre (0.33;0); ~1cm right
+1788488031,grasp,v4 blue,blue1,312,58,0.348,0.002,0.023,0.045,-37.4,660,LIFTED
+1788488085,verdict,v4 MISS far centre (0.348;0) same ~1cm right
+1788488124,grasp,v5-left blue,blue1,219,80,0.315,0.101,0.025,0.041,13.8,446,LIFTED
+1788488191,verdict,v5-left MARGINAL grasped; lateral ok; ~1.5cm near (far-left 31cm)
+1788488223,grasp,v6-left blue,blue1,231,132,0.261,0.083,0.028,0.041,28.1,386,LIFTED
+1788488287,verdict,v6-left SUCCESS (0.261;0.083) slightly right; ok
+1788488318,grasp,v7 blue,blue1,199,106,0.280,0.117,0.027,0.042,15.5,439,LIFTED
+1788488374,verdict,v7-left SUCCESS (0.28;0.117) slightly near; yaw+lateral ok
