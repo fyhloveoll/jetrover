@@ -26,10 +26,11 @@ case "${1:-log}" in
     n0=$(wc -l <"$LOG")
     echo "$2" >"$CMD"
     # wait for the node to consume the command and print a blank line (end of block)
-    for _ in $(seq 1 60); do
+    for _ in $(seq 1 160); do          # grasp takes ~25 s; poll up to 80 s
       sleep 0.5
       [ -f "$CMD" ] && continue
-      if tail -n 1 "$LOG" | grep -qE '^$|=>|\[pose\]'; then break; fi
+      [ "$(wc -l <"$LOG")" -le "$n0" ] && continue      # nothing printed yet
+      if tail -n 1 "$LOG" | grep -qE '^$|=>|\[pose\]|\[verdict\]'; then break; fi
     done
     sleep 1
     tail -n +"$((n0 + 1))" "$LOG" ;;

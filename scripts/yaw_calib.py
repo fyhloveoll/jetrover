@@ -112,6 +112,65 @@ def main():
         line = next_command()
         if not line or line.lower() == 'q':
             break
+        if line.lower().startswith('grasp') or line.lower().startswith('verdict'):
+            # "grasp [dry] [tag]": one grasp of the cube nearest the image centre using the
+            # live pipeline (grasp_pos + stable_yaw + grasp), then release and home -- no zone
+            # scan, no driving. Runs INSIDE this long-lived node (one process per session,
+            # not one per attempt: process storms lock the board). "verdict <text>" appends
+            # the operator's judgement of the last grasp to the batch csv.
+            parts = line.split()
+            batch = os.path.expanduser('~/jetrover_ws/grasp_batch.csv')
+            if parts[0].lower() == 'verdict':
+                with open(batch, 'a') as fb:
+                    fb.write('%.0f,verdict,%s\n' % (time.time(), ' '.join(parts[1:]).replace(',', ';')))
+                print('[verdict] recorded: %s\n' % ' '.join(parts[1:]), flush=True)
+                continue
+            dry = 'dry' in [p.lower() for p in parts[1:]]
+            tag = ' '.join(p for p in parts[1:] if p.lower() != 'dry')
+            node.home()
+            if not node.fresh():
+                print('[grasp] no camera frames\n', flush=True); continue
+            cx, cy = node.K[2], node.K[5]
+            insts = node.detect()
+            if not insts:
+                print('[grasp] nothing detected\n', flush=True); continue
+            inst = min(insts, key=lambda o: (o['u'] - cx) ** 2 + (o['v'] - cy) ** 2)
+            pos, h = node.grasp_pos(inst)
+            print('[grasp] target %s px(%d,%d) depth=%.3f -> pos=%s h=%.3f' %
+                  (inst['id'], inst['u'], inst['v'], inst.get('depth', 0.0),
+                   np.round(pos, 3).tolist() if pos else None, h), flush=True)
+            if pos is None:
+                print('', flush=True); continue
+            sa, ns = node.stable_yaw(inst['u'], inst['v'], pos)
+            s5 = int(max(0, min(1000, ga.YAW_NEUTRAL + ga.YAW_GAIN * sa)))
+            print('[grasp] yaw(%s) offset %+.1f (n=%d) servo5=%d  raw image angle %+.0f' %
+                  (ga.YAW_MODE, sa, ns, s5, inst['angle']), flush=True)
+            res = ('DRY', '')
+            if not dry:
+                res = node.grasp(inst)
+                print('[grasp] -> %s' % (res,), flush=True)
+                time.sleep(1.0)
+                node.move(0.6, ((10, ga.GRIPPER_OPEN),))
+                node.home()
+            with open(batch, 'a') as fb:
+                fb.write('%.0f,grasp,%s,%s,%d,%d,%.3f,%.3f,%.3f,%.3f,%.1f,%d,%s\n' %
+                         (time.time(), tag.replace(',', ';'), inst['id'], inst['u'], inst['v'],
+                          pos[0], pos[1], pos[2], h, sa, s5, res[0]))
+            print('', flush=True)
+            continue
+        if line.lower().startswith('set '):
+            # "set 1:500 2:700 ...": raw servo pulses (arm 1-5, gripper 10), 1.5 s move.
+            # "set 1:500 2:500 3:500 4:500 5:500" = all-centre pose: the arm should stand
+            # straight; a kinked joint = slipped servo horn (2026-09-04 diagnosis).
+            pairs = []
+            try:
+                for tok in line.split()[1:]:
+                    i, p = tok.split(':'); pairs.append((int(i), float(p)))
+            except ValueError:
+                print('usage: set <id>:<pulse> ...\n', flush=True); continue
+            node.move(1.5, tuple(pairs))
+            print('[set] %s\n' % pairs, flush=True)
+            continue
         if line.lower().startswith('pose'):
             # "pose <servo1_pulse>": rotate the base (camera viewpoint) keeping the FLOOR
             # observation pose otherwise -- used to check that the arm-frame angle is
@@ -139,6 +198,7 @@ def main():
                     if up[2] < 0:
                         up = -up
                     tilt = math.degrees(math.acos(max(-1.0, min(1.0, up[2]))))
+                    print('[peek] camera FK position (arm frame) = %s' % np.round(node.get_endpoint()[:3, 3], 3).tolist())
                     print('[peek] hand-eye check: floor "up" in arm frame = %s  tilt %.2f deg '
                           '(pitch %+.2f, roll %+.2f)' % (np.round(up, 3).tolist(), tilt,
                                                         math.degrees(math.asin(-up[0])), math.degrees(math.asin(-up[1]))))

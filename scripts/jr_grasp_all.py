@@ -495,6 +495,11 @@ class GraspAll(Node):
         horiz = view - (view @ n) * n; hn = np.linalg.norm(horiz)
         if hn > 1e-6:
             push = 0.4 * (x2 - x1) * foot[2] / fx   # ~0.4 x body width (cube-tuned)
+            if inst is not None and inst.get("width_m", 0) > 0:
+                # the BOX width grows ~1.4x for a cube at 45 deg -> +7 mm push -> gripper lands
+                # beyond the centre on rotated cubes (09-04: -30/-38 deg cubes 1.5-2 cm forward,
+                # 0 deg cube centred). width_m = min-area-rect short side, orientation-invariant.
+                push = 0.4 * inst["width_m"]
             if inst is not None and inst.get('elong', 1.0) > 1.6 and inst.get('width_m', 0) > 0:
                 # thin diagonal body: its BOX width is the diagonal span (a pen's box is
                 # ~10cm -> 4cm push, landing the grasp on a fingertip); push by the
