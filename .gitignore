@@ -8,3 +8,5 @@ __pycache__/
 # editor
 *.swp
 .vscode/
+# debug image output
+test_data/out/

@@ -26,6 +26,16 @@ MIN_AREA = 250.0       # min blob area (px) to be an instance
 # so grasping still works on anything -- YOLO adds semantics, never gates detection.
 import os as _os
 YOLO_ON = _os.environ.get('JR_YOLO', '0') == '1'
+# debug images (fg_mask / objects_annotated) go here, not into $HOME
+OUT_DIR = _os.environ.get('JR_OUT_DIR', _os.path.expanduser('~/jetrover/test_data/out'))
+
+
+def _save(name, img):
+    try:
+        _os.makedirs(OUT_DIR, exist_ok=True)
+        return cv2.imwrite(_os.path.join(OUT_DIR, name), img)
+    except Exception:
+        return False
 YOLO_CONF = float(_os.environ.get('JR_YOLO_CONF', '0.35'))
 _YOLO = None
 _LBL_MEMO = {}   # (u//40, v//40) -> [label, conf, ttl] sticky-name cache (see yolo_label)
@@ -37,7 +47,7 @@ def _yolo():
         from ultralytics import YOLO as _Y
         for p in (_os.environ.get('JR_YOLO_MODEL', ''),
                   _os.path.expanduser('~/jetrover_ws/yolo11m.pt'),
-                  _os.path.expanduser('~/yolo11m.pt'),
+                  _os.path.expanduser('~/models/yolo11m.pt'),
                   '/home/ubuntu/third_party/yolo/yolov11/yolo11n.pt'):
             if p and _os.path.exists(p):
                 _YOLO = _Y(p)
@@ -166,10 +176,7 @@ def detect(rgb, depth, K):
     mask = (fg.astype(np.uint8)) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    try:
-        cv2.imwrite('/home/fyh/fg_mask.png', mask)
-    except Exception:
-        pass
+    _save('fg_mask.png', mask)
     nlab, lab, stats, cent = cv2.connectedComponentsWithStats(mask, 8)
     insts = []
     for i in range(1, nlab):
@@ -238,8 +245,8 @@ def main():
         cv2.drawMarker(vis, (d['u'], d['v']), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
         print('  %-8s (%d,%d) area=%.0f angle=%+.0f depth=%.3f' %
               (d['id'], d['u'], d['v'], d['area'], d['angle'], d['depth']))
-    cv2.imwrite('/home/fyh/objects_annotated.png', vis)
-    print('wrote objects_annotated.png')
+    _save('objects_annotated.png', vis)
+    print('wrote %s/objects_annotated.png' % OUT_DIR)
 
 
 if __name__ == '__main__':
