@@ -5,6 +5,31 @@
 (见 [docs/engineering_decisions.md](docs/engineering_decisions.md) D1–D5,每条含真机证据),
 而非堆功能。
 
+## Demo videos(演示视频)
+
+Short clips from the real robot, plus one simulation clip. GitHub does not play video inline from a README, so each row links to the file under `media/` (click ▶; GitHub's file page has a player).
+真机实拍短片 + 一段仿真;GitHub 不在 README 里内嵌播放,点 ▶ 到文件页播放。
+
+| Clip | What it shows | Length |
+|---|---|---|
+| **01 Mapping**<br>[▶ watch](media/01_mapping_en.mp4) | SLAM Toolbox 2D-lidar mapping of the apartment (gamepad teleop, loop closed at the start point, map exported with a custom script).<br>SLAM Toolbox 雷达建图:手柄遥控绕场,回到起点闭合回环,自写脚本存图。 | 34 s |
+| **02 Keep-out zones**<br>[▶ watch](media/02_keepout_zones_en.mp4) | Hand-drawn keep-out zones (red) turned into a Nav2 costmap filter mask; the global planner routes around them.<br>手画禁行区 → Nav2 代价地图过滤层,全局规划绕开。 | 15 s |
+| **03 Full mission**<br>[▶ watch](media/03_full_mission_en.mp4) | Full mission run, 2026-10-22: start → Nav2 to the pickup station → pre-grasp visual closed loop → grasp → carry to the delivery station → placement¹. Phone footage synced with the Foxglove map view as picture-in-picture; played at 2×.<br>10-22 完整任务:起点→导航到取货区→抓前视觉闭环→抓取→携带到放置区→放置¹;手机实拍 + Foxglove 地图小窗同步,2 倍速。 | 62 s (2×) |
+| **Sim: MoveIt 2 grasp**<br>[▶ watch](media/sim_moveit_grasp_en.mp4) | ROS 2 + MoveIt 2 pick-and-place in Gazebo. Simulation only — not the real robot.<br>ROS 2 + MoveIt 2 Gazebo 仿真抓取,纯仿真、非真机。 | 73 s |
+
+¹ The placement segment of clip 03 is a separate take: the robot was positioned at the mat by hand and the arm ran a scripted put-down (`scripts/put_down.py`, no vision). The autonomous placement skill (`scripts/task_place.py`) is still being validated on the robot; in this run the autonomous part ends after the carry to the delivery station.<br>
+¹ 03 号片的放置段是单独补拍:车由人摆到垫边,臂只执行预设放下动作(`scripts/put_down.py`,无视觉);自主放置技能 `scripts/task_place.py` 仍在真机验证中,本次自主运行到携带至放置区为止。
+
+Stills(静帧):
+
+<p>
+  <a href="media/stills/01_map_apartment_loop_20260903.png"><img src="media/stills/01_map_apartment_loop_20260903.png" width="300" alt="Apartment loop map, SLAM Toolbox, 2026-09-03"></a>
+  <a href="media/stills/04_keepout_zones_red.png"><img src="media/stills/04_keepout_zones_red.png" width="300" alt="Keep-out zones (red) drawn over the map"></a>
+</p>
+
+Left: apartment loop map (SLAM Toolbox, 2026-09-03) · right: keep-out zones (red) over the same map.
+左:公寓回环地图(09-03);右:同一张图上的禁行区(红)。
+
 ## 核心策略
 **不修改厂家 vendor 代码**;在自有 workspace 里建包,只**调用** vendor 驱动
 (底盘/雷达/相机/控制板/IK 服务),从不编辑它们。
