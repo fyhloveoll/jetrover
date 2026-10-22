@@ -2,7 +2,7 @@
 # nav_lean_up.sh -- navigation-only stack for nav testing: bringup WITHOUT camera (saves ~1 core),
 # no foxglove bridge, Nav2 with the apartment map, then the runtime patches (TEB holonomic +
 # smoother lateral accel + TEB obstacle margins + progress checker) VERIFIED by read-back.
-# Usage: bash ~/jetrover_ws/nav_lean_up.sh [init_x init_y init_yaw_deg]
+# Usage: [JR_MAP=...yaml] [JR_NAV_PARAMS=~/jetrover_ws/nav2_params_zones.yaml] bash ~/jetrover_ws/nav_lean_up.sh [init_x init_y init_yaw_deg]
 # shellcheck disable=SC1090
 source ~/jetrover_ws/jr_env.sh
 WS=~/jetrover_ws
@@ -12,7 +12,7 @@ setsid ros2 launch jr_bringup robot.launch.py enable_camera:=false >$WS/bringup.
 echo $! >$WS/bringup.pid
 for i in $(seq 1 30); do sleep 1; timeout 3 ros2 topic hz /scan 2>/dev/null | grep -q average && { echo "  scan up after ${i}s"; break; }; done
 echo "== nav =="
-setsid ros2 launch jr_nav nav.launch.py map:="${JR_MAP:-/home/ubuntu/jetrover_ws/maps/apt_loop_20260903.yaml}" >$WS/nav.log 2>&1 </dev/null &
+setsid ros2 launch jr_nav nav.launch.py map:="${JR_MAP:-/home/ubuntu/jetrover_ws/maps/apt_loop_20260903.yaml}" ${JR_NAV_PARAMS:+params_file:=$JR_NAV_PARAMS} >$WS/nav.log 2>&1 </dev/null &
 echo $! >$WS/nav.pid
 for i in $(seq 1 40); do sleep 3; a=$(timeout 5 ros2 lifecycle get /amcl 2>/dev/null | grep -c active); n=$(timeout 5 ros2 action list 2>/dev/null | grep -c navigate_to_pose); [ "$a" -ge 1 ] && [ "$n" -ge 1 ] && { echo "  amcl active + nav action after $((i*3))s"; break; }; done
 sleep 5

@@ -10,3 +10,5 @@ __pycache__/
 .vscode/
 # debug image output
 test_data/out/
+# interview-specific material stays local
+docs/interview_*

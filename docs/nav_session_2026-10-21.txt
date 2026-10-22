@@ -1,0 +1,2 @@
+wrong pose (1.9,0.5,140) -> correct (1.15,0,180) -> goal (2.2,-1.0,0) SUCCEEDED 11.9 s, end (2.21,-0.82,6.3deg)
+Wed Oct 21 18:10:32     2026

@@ -1,0 +1,16 @@
+{
+ "mode": "carry",
+ "zones": [
+  [
+   3.3,
+   1.25,
+   90
+  ]
+ ],
+ "delivery": [
+  3.35,
+  -0.3,
+  -90
+ ],
+ "_comment": "apt_demo2 map, 10-21 evening v5. pickup: the ORIGINAL station by the north wall (cubes unchanged, board removed), robot faces north. delivery: mat per the green rectangle, board at the mat centre (3.35,-0.83); robot stops north of the mat facing south."
+}

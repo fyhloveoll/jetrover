@@ -145,7 +145,10 @@ class GraspAll(Node):
         self.survey_chased = []  # arm-frame survey targets already driven to (one chase each)
 
     def _rgb(self, m): self.rgb = self.bridge.imgmsg_to_cv2(m, 'bgr8')
-    def _d(self, m): self.depth = self.bridge.imgmsg_to_cv2(m, '16UC1')
+    def _d(self, m):
+        self.depth = self.bridge.imgmsg_to_cv2(m, '16UC1')
+        self._depth_seq = getattr(self, '_depth_seq', 0) + 1   # frame counter: cache key for the floor fit
+
     def _i(self, m): self.K = list(m.k)
     def _o(self, m): self.odom = m.pose.pose.position
     def _s(self, m): self.scan = m; self.scan_t = time.time()
@@ -751,6 +754,21 @@ class GraspAll(Node):
             return None
         return tuple(int(v) for v in np.median(px, axis=0))
 
+    def gripper_colour_px(self, tmpl):
+        """how many pixels of the object's colour sit in the gripper region of the CURRENT frame
+        (bottom-centre at OBSERVE). Logged after every carry grasp (10-21: a knocked-away cube
+        passed the 'pickup spot empty' check with an empty gripper); becomes a hard check once
+        the numbers are known -- JR_HOLD_MIN=<px> enables it."""
+        if tmpl is None or self.rgb is None:
+            return -1
+        h, w = self.rgb.shape[:2]
+        roi = self.rgb[int(h * 0.6):, int(w * 0.3):int(w * 0.7)]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        dh = np.abs(hsv[:, :, 0].astype(np.int16) - int(tmpl[0]))
+        dh = np.minimum(dh, 180 - dh)
+        m = (dh <= self.CL_HUE_TOL) & (hsv[:, :, 1] >= 60) & (hsv[:, :, 2] >= 50)
+        return int(m.sum())
+
     def find_by_colour(self, tmpl, min_area=300):
         """largest blob matching the HSV template in the CURRENT rgb; returns (u, v, area, cnt) or None"""
         if tmpl is None or self.rgb is None:
@@ -934,6 +952,12 @@ class GraspAll(Node):
         return ('LIFTED', '%s s5=%d moved=%.0fmm' % (tag, s5, moved))
 
     def grasp(self, inst):
+        # 10-21: the mission / run mode was still using THIS open-loop grasp (~1 cm error ->
+        # misses: "the gripper came down next to the cube"), while the validated pre-grasp
+        # visual closed loop (6/6 on 09-04) was only wired to the yaw_calib test path.
+        # Default to the closed loop everywhere; JR_CL=0 restores the open-loop grasp.
+        if os.environ.get('JR_CL', '1') == '1':
+            return self.grasp_closed_loop(inst)
         pos, h = self.grasp_pos(inst)
         if pos is None:
             return ('FAIL', 'no depth')
@@ -988,8 +1012,18 @@ class GraspAll(Node):
         return False
 
     def floor_point_cam(self, u, v):
-        # ray through pixel (u,v) intersected with the RANSAC floor plane
-        fl = self.fit_floor(None)
+        # ray through pixel (u,v) intersected with the RANSAC floor plane.
+        # 10-21: the plane fit is CACHED per depth frame -- scan_zone called this for every
+        # contour point and every tag, i.e. hundreds of RANSAC fits per view: minutes per
+        # placement with the CPU pegged (Jetson hot, user: "it just stands there").
+        # 10-22: key by a frame COUNTER, not id(): numpy reuses the buffer address, so id() stayed
+        # equal across frames and one failed fit (None) was cached forever -> every tag/contour
+        # projection returned None (mission8: tags seen in 4 views, 'paper never seen').
+        key = getattr(self, '_depth_seq', 0)
+        if getattr(self, '_fl_key', None) != key or getattr(self, '_fl_fit', None) is None:
+            self._fl_fit = self.fit_floor(None)
+            self._fl_key = key
+        fl = self._fl_fit
         if fl is None:
             return None
         n, dd = fl
@@ -1032,7 +1066,9 @@ class GraspAll(Node):
                  (OBSERVE, 820), (OBSERVE, 340), (FLOOR, 340), (OBSERVE, 180)]
         got_views = 0
         for pose, s1 in views:
-            if got_views >= 2 and len(pts) >= 50 and anchors:
+            # 10-21: after face_station the mat is straight ahead; one view with the mat AND
+            # tag anchors is enough (8 views x per-point RANSAC took 7 minutes)
+            if got_views >= 1 and len(pts) >= 20 and anchors:
                 break                                  # enough coverage already
             self.move(0.7, ((1, s1),) + pose[1:])      # gripper untouched (carry-safe)
             time.sleep(0.2)                            # stop-and-stare: no mid-pan frames
@@ -1257,6 +1293,8 @@ def stats_summary():
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else 'run'
+    if mode == 'place':
+        print('[PLACE-MODE] moved to task_place.py (python3 task_place.py --help); exit 2'); sys.exit(2)
     rclpy.init()
     node = GraspAll()
     if node.wait_bridge() < 1:
@@ -1318,33 +1356,6 @@ def main():
         print('[DRIVETEST] requested %+.2f on %s, moved %+.3f' % (dist, axis, moved))
         node.destroy_node(); rclpy.shutdown(); return
 
-    if mode == 'place':
-        # mission delivery (jr_mission): the cube is ALREADY in the gripper (a JR_CARRY
-        # run grabbed it, nav drove us here). Find the zone HERE by pan-mosaic and
-        # place -- the gripper is never opened before the placement motion.
-        if not node.board_alive():      # tilts joint2 only; gripper untouched
-            print('!! BOARD DEAD, cannot place'); node.destroy_node(); rclpy.shutdown(); return
-        node.move(1.5, ((1, 500),) + OBSERVE[1:])   # observe WITHOUT touching servo 10
-        node.fresh()
-        node.scan_zone()
-        off = (0.0, 0.0)
-        if node.zone_hull is not None:
-            # MICRO-APPROACH: nav parks within tolerance of the standoff point; if the
-            # zone centre ended up beyond the arm (x=0.46 > 0.38 on the first mission
-            # delivery), drive the delta and re-scan from the closer, cleaner view
-            h = node.zone_hull.reshape(-1, 2).astype(np.float32) / 1000.0
-            zx, zy = float(h[:, 0].mean()), float(h[:, 1].mean())
-            mx = node.drive(max(-0.3, min(0.45, zx - 0.28))) if zx > 0.34 or zx < 0.20 else 0.0
-            my = node.drive(max(-0.3, min(0.3, zy)), axis='y') if abs(zy) > 0.18 else 0.0
-            if mx or my:
-                off = (mx, my)
-                node.settle_after_drive()
-                node.scan_zone(off)
-        drop, on_zone = node.place_on_paper(off)
-        print('[PLACE-MODE] released at %s (on_zone=%s)' % (np.round(drop, 3).tolist(), on_zone))
-        node.move(1.2, ((1, 500),) + OBSERVE[1:])
-        node.destroy_node(); rclpy.shutdown(); return
-
     if mode == 'survey':
         node.home(); node.fresh()
         pc = node.paper_contour()
@@ -1361,10 +1372,18 @@ def main():
         print('!! BOARD DEAD: arm commands are not executing (telemetry/odom LIE during')
         print('!! this lockup). Power-cycle the board (main switch OFF -> ON), then rerun.')
         node.destroy_node(); rclpy.shutdown(); return
+    if os.environ.get('JR_DOCK_PICKUP') == '1':
+        # OPTIONAL (off by default since 10-21): dock on an AprilTag board at the pickup.
+        # Not used in the mission any more: tags at the pickup are read as a DROP ZONE by the
+        # zone detector and cubes next to them get excluded as "already placed".
+        import station_dock
+        print('[RUN] docking on the station board: %s' % ('OK' if station_dock.dock(node) else 'NOT CONVERGED, continuing'))
 
     node.home()
     grabbed, attempts, consec = 0, 0, 0
     blacklist = []
+    carry_miss = []     # [u, v, misses] per cube in carry mode (retry before blacklisting)
+    CARRY_RETRIES = int(os.environ.get('JR_CARRY_RETRIES', '2'))
     hard_black = []     # start-frame (x,y) parked as unreachable-without-budget; never cleared
     placed_pts = []   # arm-frame (x,y,z) of on-zone drops -- excluded as targets + obstacles
     floor_drops = []  # fallback drops on open floor -- obstacles only, re-collected once zone seen
@@ -1580,6 +1599,7 @@ def main():
         # HOME view, so they must use orig's coords, never the recentered ones.
         orig = cand[0][1]
         pos0 = cand[0][0]
+        tmpl0 = node.colour_template(orig)          # same frame as the detection (for the hold check)
         attempts += 1
         print('-- attempt %d: %s @(%d,%d) angle=%+.0f (%d pickable) --' %
               (attempts, orig['id'], orig['u'], orig['v'], orig['angle'], len(cand)))
@@ -1639,13 +1659,36 @@ def main():
             node.move(1.2, FLOOR)
             node.fresh(); node.fresh()
             if node.spot_occupied(orig['u'], orig['v'], orig['label']):
-                print('  -> CARRY MISS (cube still on floor) -> retrying')
+                # 10-21: one miss used to blacklist the cube and END the trip ("zone clear"
+                # with a cube still lying there). Retry the SAME cube up to CARRY_RETRIES
+                # times before giving up on it.
+                hit = None
+                for cm in carry_miss:
+                    if abs(cm[0] - orig['u']) < 45 and abs(cm[1] - orig['v']) < 45:
+                        hit = cm; break
+                if hit is None:
+                    hit = [orig['u'], orig['v'], 0]; carry_miss.append(hit)
+                hit[2] += 1
                 node.move(1.2, OBSERVE)
-                blacklist.append((orig['u'], orig['v'])); consec += 1
-                log.append((orig['id'], 'MISS', 'carry grasp missed'))
+                log.append((orig['id'], 'MISS', 'carry grasp missed (%d)' % hit[2]))
                 log_stat(orig, 'MISS', 'carry grasp missed')
+                if hit[2] < CARRY_RETRIES:
+                    print('  -> CARRY MISS (cube still on floor) -> retry %d/%d on the same cube' % (hit[2], CARRY_RETRIES))
+                    continue
+                print('  -> CARRY MISS x%d -> giving up on this cube' % hit[2])
+                blacklist.append((orig['u'], orig['v'])); consec += 1
                 continue
             node.move(1.2, OBSERVE)
+            node.fresh()
+            hold_px = node.gripper_colour_px(tmpl0)
+            print('  [HOLD] object colour pixels in the gripper region: %d' % hold_px)
+            hold_min = int(os.environ.get('JR_HOLD_MIN', '0'))
+            if hold_min > 0 and 0 <= hold_px < hold_min:
+                print('  -> gripper looks EMPTY (%d < %d) -> treating as a miss' % (hold_px, hold_min))
+                blacklist.append((orig['u'], orig['v'])); consec += 1
+                log.append((orig['id'], 'MISS', 'gripper empty after lift'))
+                log_stat(orig, 'MISS', 'gripper empty after lift')
+                continue
             # mission mode (jr_mission.py): keep the cube in the gripper and exit -- the
             # mission NAVIGATES to the delivery pose and releases there. Arm is already
             # at OBSERVE with the gripper closed; no local place, no return drive.

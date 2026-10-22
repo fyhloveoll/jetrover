@@ -1,0 +1,12 @@
+== 1/4 sweep leftovers ==
+  TERM group 4249 (ros2 launch jr_bringup)
+== 2/4 launch stack ==
+== 3/4 wait on node state (max 120s) ==
+  camera_topics=19 nav_action=1 amcl_active=1
+== 3.5/4 nav param patch (TEB holonomic; vendor yaml configures it differential) ==
+  TEB strafe unlocked + smoother vy unlocked + theta matched
+== 4/4 sanity ==
+  cmd_vel publishers: 1 (must be 1)
+  arm: OK
+sent buzzer, subs=1
+READY -- set initial pose (RViz or robot-side), place cubes, then: python3 ~/jetrover_ws/jr_mission.py run

@@ -31,7 +31,7 @@ sleep 14
 setsid ros2 launch kinematics kinematics_node.launch.py >~/kin.log 2>&1 </dev/null &
 sleep 6
 # map: the US apartment loop-closure map by default (JR_MAP overrides); map_02 was the old flat
-setsid ros2 launch jr_nav nav.launch.py map:="${JR_MAP:-/home/ubuntu/jetrover_ws/maps/apt_loop_20260903.yaml}" >~/nav.log 2>&1 </dev/null &
+setsid ros2 launch jr_nav nav.launch.py map:="${JR_MAP:-/home/ubuntu/jetrover_ws/maps/apt_loop_20260903.yaml}" ${JR_NAV_PARAMS:+params_file:=$JR_NAV_PARAMS} >~/nav.log 2>&1 </dev/null &
 
 echo "== 3/4 wait on node state (max 120s) =="
 for i in $(seq 1 24); do

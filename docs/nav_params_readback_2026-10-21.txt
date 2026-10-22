@@ -1,0 +1,29 @@
+FollowPath.max_vel_x                             failed to check service availability: rcl node's context is invalid, at ./src/rcl/node.c:428
+FollowPath.max_vel_y                             Double value is: 0.15
+FollowPath.max_vel_theta                         Double value is: 0.6
+FollowPath.max_vel_x_backwards                   Double value is: 0.2
+FollowPath.acc_lim_x                             Double value is: 2.5
+FollowPath.acc_lim_theta                         Double value is: 3.2
+FollowPath.min_turning_radius                    FollowPath.weight_kinematics_nh                  Double value is: 1.0
+FollowPath.xy_goal_tolerance                     Parameter not set
+FollowPath.yaw_goal_tolerance                    Parameter not set
+FollowPath.free_goal_vel                         Boolean value is: False
+FollowPath.dt_ref                                Double value is: 0.6
+FollowPath.max_global_plan_lookahead_dist        Double value is: 3.0
+FollowPath.feasibility_check_no_poses            Integer value is: 3
+goal_checker.xy_goal_tolerance                   Double value is: 0.12
+goal_checker.yaw_goal_tolerance                  Double value is: 0.2
+goal_checker.stateful                            Boolean value is: True
+controller_frequency                             min_x_velocity_threshold                         Double value is: 0.0001
+min_theta_velocity_threshold                     Double value is: 0.0001
+progress_checker.required_movement_radius        Double value is: 0.25
+progress_checker.movement_time_allowance         Double value is: 20.0
+FollowPath.angular_dist_threshold                FollowPath.rotate_to_heading_angular_vel         Double value is: 1.5
+FollowPath.max_angular_accel                     Double value is: 3.2
+FollowPath.simulate_ahead_time                   Double value is: 0.3
+--- velocity_smoother:
+max_velocity                                     failed to check service availability: rcl node's context is invalid, at ./src/rcl/node.c:428
+min_velocity                                     Double values are: array('d', [-0.15, -0.15, -0.6])
+max_accel                                        max_decel                                        Double values are: array('d', [-2.5, -2.5, -3.2])
+deadband_velocity                                velocity_timeout                                 Double value is: 1.0
+smoothing_frequency                              Double value is: 20.0

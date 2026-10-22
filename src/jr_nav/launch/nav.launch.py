@@ -12,6 +12,8 @@ NAV_PKG = '/home/ubuntu/ros2_ws/src/navigation'
 def generate_launch_description():
     map_yaml = LaunchConfiguration('map')
     use_teb = LaunchConfiguration('use_teb')
+    params_file = LaunchConfiguration('params_file')   # default = vendor yaml; our copy with costmap
+                                                        # filters comes from scripts/nav_params_filters.py
 
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -22,7 +24,7 @@ def generate_launch_description():
             'use_namespace': 'false',
             'map': map_yaml,
             'use_sim_time': 'false',
-            'params_file': os.path.join(NAV_PKG, 'config/nav2_params.yaml'),
+            'params_file': params_file,
             'autostart': 'true',
             'use_teb': use_teb,
         }.items(),
@@ -35,6 +37,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('map', default_value='/home/ubuntu/jetrover_ws/maps/apt_loop_20260903.yaml'),
         DeclareLaunchArgument('use_teb', default_value='true'),
+        DeclareLaunchArgument('params_file', default_value=os.path.join(NAV_PKG, 'config/nav2_params.yaml')),
         nav2,
         relay,
     ])

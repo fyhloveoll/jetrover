@@ -21,3 +21,4 @@ setv /velocity_smoother min_velocity "[-0.15, -0.15, -0.6]"
 setv /velocity_smoother max_accel "[2.5, 2.5, 3.2]"
 setv /velocity_smoother max_decel "[-2.5, -2.5, -3.2]"
 setv /velocity_smoother deadband_velocity "[0.02, 0.05, 0.05]"   # kill sub-5cm/s lateral dither (09-03: vy reversals 56 -> 6)
+setv /controller_server FollowPath.max_vel_x_backwards 0.05   # 10-21: reversed onto the delivery mat -> no reversing during missions

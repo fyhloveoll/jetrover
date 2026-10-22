@@ -56,13 +56,14 @@ ros2 launch jr_bringup robot.launch.py enable_camera:=true      # 底盘+雷达+
 ros2 launch kinematics kinematics_node.launch.py                 # IK/FK 服务（是 launch，不是 run）
 python3 jr_grasp_all.py run                                      # 抓光地面
 # 导航 / 任务
-ros2 launch jr_nav nav.launch.py                                 # map 默认 map_02（美国公寓旧图作废，需重建）
+ros2 launch jr_nav nav.launch.py                                 # map 默认 maps/apt_loop_20260903（09-03 回环图）
 bash ~/jetrover_ws/mission_up.sh                                 # 一键净启动全栈（PID 清扫+体检+TEB 参数覆写）
 python3 jr_mission.py run
+python3 task_place.py [--preflight|--look-only|--dry-run|--handin]   # 放置技能，退出码见文件头
 # 建图 / 遥控
 ros2 launch jr_slam slam.launch.py                               # slam_toolbox
 ros2 run jr_teleop keyboard_teleop                               # 发 /controller/cmd_vel，直达电机
-bash ~/jetrover_ws/save_map.sh <name>
+python3 ~/jetrover_ws/map_dump.py <name>                         # 存图用这个（map_saver_cli 会因 /map QoS 卡死）
 # 健康
 ros2 topic hz /odom_raw                                          # 板→主机活着 ~30-48Hz
 python3 buzz.py                                                  # 命令通路：蜂鸣两声
@@ -81,15 +82,16 @@ python3 buzz.py                                                  # 命令通路�
 - 舵机 ID 1–5 = 臂，10 = 夹爪（安全范围 200–700，>700 撞限位），脉冲 0–1000 = 0–240°。
   观察位姿 `(1,500),(2,700),(3,15),(4,175),(5,500)`，夹爪 200 开 / 540 闭。
 - 电池 11.1 V 6000 mAh，重载约 1.5–2 h；**低电压时板子锁死概率显著升高**，跑真机前充满。
-- 手柄走控制板 `/ros_robot_controller/joy`（非 USB HID）；USB 接收器 2026-08 起失踪。
+- 手柄走控制板 `/ros_robot_controller/joy`（非 USB HID），09-03 验证正常，建图用 `deploy/map_session.sh`。
+- **相机钣金支架托运弯了 16.7°**（09-02 地面法向量估计，09-03 AprilTag 手眼标定证实），软件补偿 `JR_CAM_PITCH`；`scripts/handeye_check.py` / peek 可复核。剩余 14 mm 位置散布是厂家运动学误差，相机标定修不了。
 
 ## 已知诊断结论（真机取证，别再重新猜）
 
 - **导航打转根因**：Nav2 活动控制器是 **TEB**（RotationShim 包裹），但按差速车配置
   （`max_vel_y=0`、`weight_kinematics_nh=1000`），加 velocity_smoother 的 vy 上限 0，麦轮横移被禁用，
   侧向纠偏只能前进-转-后退。修复在自有 params 副本 + `mission_up.sh` 运行时 param set。
-  `cmd_vel_relay` 已改等比缩放（保方向/曲率）。**回归验证等新地图。**
-- **偏航角不是 YOLO 算的**，是深度分割轮廓 `cv2.minAreaRect`；残差嫌疑是夹爪机械中立位偏置和透视压缩。
+  `cmd_vel_relay` 已改等比缩放（保方向/曲率）。**09-03 回归：仍倒腾/打摆。新增四根因**：velocity_smoother 横向加速度 0（vy 出不了 0）、TEB `min_obstacle_dist` 0.26+足迹 0.15=0.41 m 间距在公寓里不可行、进度检查 0.5 m/10 s 误判、CPU 过载（foxglove 桥 94%）。补丁 `scripts/nav_patch_all.sh`（含横向死区 0.05、nh=10，横向反转 56→6），**未定案**，用 `nav_lean_up.sh` + `nav_probe.sh` 继续。
+- **偏航角**：默认 `JR_YAW_MODE=edge`（RGB 边缘+霍夫线段反投影到方块顶面，误差 ±1.6°，帧 sd 0.4°）；旧 image 模式符号反且被透视压缩（+15 读 −11），是 7 月大角度失败的机制。腕增益 −4.17（edge）/ +4.17（image），中立位 504。
 - 控制板锁死根因（2026-06）：厂家 `button_scan.service` 与 bringup 双开串口，已 disable 后 60+ 循环零锁死。
 - NVIDIA LocateAnything 不采用（无 mask、非商用许可）。
 

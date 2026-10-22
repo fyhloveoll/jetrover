@@ -31,6 +31,7 @@ from servo_controller_msgs.msg import ServosPosition, ServoPosition
 
 MISSION = os.path.expanduser('~/jetrover_ws/mission.json')
 GRASP = os.path.expanduser('~/jetrover_ws/jr_grasp_all.py')
+PLACE = os.path.expanduser('~/jetrover_ws/task_place.py')   # placement skill (exit code = result, see its header)
 OBSERVE = ((1, 500), (2, 720), (3, 100), (4, 120), (5, 500))
 FLOOR = ((1, 500), (2, 700), (3, 15), (4, 175), (5, 500))   # known-safe low pose (delivery lowering)
 NAV_TIMEOUT = float(os.environ.get('JR_NAV_TIMEOUT', '150'))
@@ -64,7 +65,11 @@ class Mission(Node):
 
     def goto(self, x, y, yaw_deg):
         # send a NavigateToPose goal and wait for the result
-        if not self.nav.wait_for_server(timeout_sec=8.0):
+        for attempt in range(4):                     # discovery can lag after a long grasp run (10-21)
+            if self.nav.wait_for_server(timeout_sec=8.0):
+                break
+            print('.. nav2 action server not seen yet (try %d/4)' % (attempt + 1))
+        else:
             print('!! nav2 action server not available (is nav.launch running?)')
             return False
         g = NavigateToPose.Goal()
@@ -153,6 +158,7 @@ def main():
     delivery = cfg.get('delivery')
 
     total = 0
+    failed = False                                  # a non-zero task_place.py exit: cube kept, mission stops
     max_trips = int(os.environ.get('JR_MAX_TRIPS', '4'))
     for i, z in enumerate(zones):
       for trip in range(max_trips):
@@ -180,13 +186,14 @@ def main():
             print('[MISSION] cube in gripper -> delivering')
             # arm is already at OBSERVE holding the cube (grasp ends there)
             if delivery and node.goto(*delivery):
-                # vision takes over for the last half-metre: pan-scan for the drop
-                # zone (dark mat + AprilTag) and place ON it -- nav only parks us
-                # nearby (AMCL+goal tolerance is +-20cm, blind release scatters)
-                r = subprocess.call(['python3', GRASP, 'place'])
-                if r != 0:                          # zone place failed: safe low release
-                    node.arm(FLOOR, dur=2.5)
-                    node.arm(((10, 200),), dur=1.0)
+                # vision takes over for the last metre: task_place.py maps the dark mat, drives the
+                # lidar-guarded micro-approach and opens the gripper ONLY over a mat cell with hover+drop
+                # IK -- nav only parks us nearby (AMCL+goal tolerance is +-20cm, blind release scatters)
+                rc = subprocess.call(['python3', PLACE])        # same skill as the staged take; exit code IS the result
+                if rc != 0:
+                    print('!! PLACE FAILED rc=%d -- cube KEPT in gripper; mission stops here (release by hand: python3 put_down.py)' % rc)
+                    failed = True
+                    break                                        # next trip would open the gripper at line 166 (arm(OBSERVE, gripper=200) at the top of the trip loop)
                 node.arm(OBSERVE, gripper=200)
                 print('[MISSION] delivered.')
             else:
@@ -195,12 +202,15 @@ def main():
                 node.arm(((10, 200),), dur=1.0)
                 node.arm(OBSERVE, gripper=200)      # and tuck the arm back
                 break                               # nav is broken: stop this zone
+      if failed:
+          break                                       # cube still in the gripper: no more zones/trips
     if not carry and delivery:
         node.arm(OBSERVE, gripper=200)
         node.goto(*delivery)
-    print('===== MISSION DONE ===== grabbed total=%d' % total)
+    print('===== MISSION DONE ===== grabbed total=%d%s' % (total, '  (PLACE FAILED, cube in gripper)' if failed else ''))
     node.destroy_node()
     rclpy.shutdown()
+    sys.exit(3 if failed else 0)
 
 
 if __name__ == '__main__':
