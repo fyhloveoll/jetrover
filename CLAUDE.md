@@ -6,14 +6,15 @@
 ## 这是什么
 
 Hiwonder **JetRover**（Jetson Orin NX 16GB，原生 Ubuntu 22.04 + ROS2 Humble）上的
-语言/视觉驱动移动抓取系统。真机成果见 README。**语言构成：Python 约 5300 行，C++ 0 行**
-（`firmware/watchdog/` 是 145 行 C）。`src/` 里 4 个 ament_cmake 包只有 launch/config，
-2 个 ament_python 包（`jr_teleop`、`jr_vision`）才有节点代码。
+语言/视觉驱动移动抓取系统。真机成果见 README。**语言构成：Python 约 9600 行（scripts 8200 + src 1400），C++ 68 行**
+（`src/jr_teleop_cpp/` 是 cmd_vel_relay 的 rclcpp 移植，未接入 launch；`firmware/watchdog/` 是 145 行 C）。
+`src/` 里 jr_bringup / jr_slam / jr_nav 只有 launch/config，jr_interfaces 是 action 定义，
+`jr_teleop`、`jr_vision` 是 ament_python 节点（2026-10-22 口径）。
 
 ## 铁律
 
 1. **不改 vendor 代码**。车上 `~/ros2_ws`（厂家）和 `~/third_party/` 只读；自己的东西全在
-   `~/jetrover_ws`。vendor launch 硬编码的参数用**运行时 `ros2 param set`** 覆写（见 `scripts/mission_up.sh` 3.5 步）。
+   `~/jetrover_ws`。vendor launch 硬编码的参数用**运行时 `ros2 param set`** 覆写（现在由 `scripts/stack_wait.py` 的 PATCHES 在开机时统一下发；旧 `mission_up.sh` 3.5 步同理）。
 2. **车上同一时刻只能有一个 bringup**（串口独占，双开会让控制板固件锁死）。
    起任何 launch 前先 `ros2 topic info /controller/cmd_vel` 看 Publisher 数。
 3. **停进程只按记账 PID 发 SIGTERM，禁止 `pkill -f`**（ssh 包装命令含同字符串会连环误杀）。
@@ -57,7 +58,7 @@ ros2 launch kinematics kinematics_node.launch.py                 # IK/FK 服务�
 python3 jr_grasp_all.py run                                      # 抓光地面
 # 导航 / 任务
 ros2 launch jr_nav nav.launch.py                                 # map 默认 maps/apt_loop_20260903（09-03 回环图）
-bash ~/jetrover_ws/mission_up.sh                                 # 一键净启动全栈（PID 清扫+体检+TEB 参数覆写）
+bash ~/jetrover_ws/mission_boot.sh 1.0 0.0 0                     # 一键净启动+自检+补丁+初始位姿+蜂鸣，约 30 s（旧 mission_up.sh 已被取代）
 python3 jr_mission.py run
 python3 task_place.py [--preflight|--look-only|--dry-run|--handin]   # 放置技能，退出码见文件头
 # 建图 / 遥控
